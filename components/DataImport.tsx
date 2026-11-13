@@ -2,9 +2,10 @@ import React, { useState, useRef } from 'react';
 import { 
   Upload, FileText, Trash2, Eye, EyeOff, CheckCircle, 
   FileSpreadsheet, AlertCircle, X, RefreshCw, Plus, Megaphone, 
-  Files, Layers, Check
+  Files, Layers, Check, Calendar, ShieldCheck
 } from 'lucide-react';
-import { DataSource, FileType } from '../types';
+import { DataSource, FileType, SalesRecord, AdvertisementRecord } from '../types';
+import { doDateRangesOverlap, extractDateRange } from '../utils';
 
 interface DataImportProps {
   sources: DataSource[];
@@ -16,6 +17,9 @@ interface DataImportProps {
   onToggle: (id: string) => void;
   onLoadSample: () => void;
   onRefresh: () => void;
+  deduplicateRows?: boolean;
+  onToggleDeduplicate?: () => void;
+  removedDuplicateCount?: number;
 }
 
 export const DataImport: React.FC<DataImportProps> = ({ 
@@ -27,7 +31,10 @@ export const DataImport: React.FC<DataImportProps> = ({
   onClearAll,
   onToggle, 
   onLoadSample, 
-  onRefresh 
+  onRefresh,
+  deduplicateRows = true,
+  onToggleDeduplicate,
+  removedDuplicateCount = 0
 }) => {
   const [uploadingType, setUploadingType] = useState<FileType | null>(null);
   const [error, setError] = useState<{ type: FileType; message: string } | null>(null);
@@ -306,37 +313,72 @@ export const DataImport: React.FC<DataImportProps> = ({
 
         {/* List of uploaded files */}
         <div className="flex-1 space-y-2 mb-4 max-h-52 overflow-y-auto pr-1 custom-scrollbar">
-          {existingFiles.map(file => (
-            <div key={file.id} className="p-2.5 bg-white/80 dark:bg-slate-900/60 rounded-lg border border-gray-100 dark:border-slate-700/60 flex justify-between items-center group transition-colors">
-              <div className="min-w-0 pr-2">
-                <div className="flex items-center gap-2">
-                  <span className={`font-medium text-xs truncate max-w-[170px] ${!file.isActive ? 'text-gray-400 line-through' : 'text-gray-800 dark:text-gray-200'}`} title={file.fileName}>
-                    {file.fileName}
-                  </span>
-                  {!file.isActive && <span className="text-[10px] text-red-500 font-medium px-1 bg-red-50 dark:bg-red-900/30 rounded">(Hidden)</span>}
+          {existingFiles.map(file => {
+            const range = file.dateRange || (
+              (file.type === 'SALES' || file.type === 'ADVERTISEMENT') && file.parsedData
+                ? extractDateRange(file.parsedData as (SalesRecord | AdvertisementRecord)[])
+                : undefined
+            );
+            const hasOverlap = Boolean(
+              range &&
+              file.isActive &&
+              existingFiles.some(other => {
+                if (other.id === file.id || !other.isActive) return false;
+                const otherRange = other.dateRange || (
+                  (other.type === 'SALES' || other.type === 'ADVERTISEMENT') && other.parsedData
+                    ? extractDateRange(other.parsedData as (SalesRecord | AdvertisementRecord)[])
+                    : undefined
+                );
+                return doDateRangesOverlap(range, otherRange);
+              })
+            );
+
+            return (
+              <div key={file.id} className="p-2.5 bg-white/80 dark:bg-slate-900/60 rounded-lg border border-gray-100 dark:border-slate-700/60 flex justify-between items-center group transition-colors">
+                <div className="min-w-0 pr-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`font-medium text-xs truncate max-w-[155px] ${!file.isActive ? 'text-gray-400 line-through' : 'text-gray-800 dark:text-gray-200'}`} title={file.fileName}>
+                      {file.fileName}
+                    </span>
+                    {!file.isActive && <span className="text-[10px] text-red-500 font-medium px-1 bg-red-50 dark:bg-red-900/30 rounded">(Hidden)</span>}
+                    {hasOverlap && (
+                      <span
+                        className="text-[10px] text-amber-700 dark:text-amber-300 font-semibold px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/40 rounded"
+                        title="Date range overlaps with another active sheet"
+                      >
+                        Overlap
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span>{file.rowCount.toLocaleString()} rows • {new Date(file.uploadDate).toLocaleDateString([], { day: '2-digit', month: 'short' })}</span>
+                    {range && (
+                      <span className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 font-medium">
+                        <Calendar className="w-2.5 h-2.5" />
+                        {range.start} → {range.end}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
-                   {file.rowCount.toLocaleString()} rows • {new Date(file.uploadDate).toLocaleDateString([], { day: '2-digit', month: 'short' })}, {new Date(file.uploadDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                <div className="flex gap-1 shrink-0">
+                   <button 
+                      onClick={() => onToggle(file.id)}
+                      className="p-1 text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-slate-700 rounded transition-colors"
+                      title={file.isActive ? "Hide Data" : "Show Data"}
+                    >
+                      {file.isActive ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                   </button>
+                   <button 
+                      onClick={() => onRemove(file.id)}
+                      className="p-1 text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-slate-700 rounded transition-colors"
+                      title="Remove File"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                   </button>
                 </div>
               </div>
-              <div className="flex gap-1 shrink-0">
-                 <button 
-                    onClick={() => onToggle(file.id)}
-                    className="p-1 text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-slate-700 rounded transition-colors"
-                    title={file.isActive ? "Hide Data" : "Show Data"}
-                  >
-                    {file.isActive ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                 </button>
-                 <button 
-                    onClick={() => onRemove(file.id)}
-                    className="p-1 text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-slate-700 rounded transition-colors"
-                    title="Remove File"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                 </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Upload Action Area */}
@@ -494,6 +536,40 @@ export const DataImport: React.FC<DataImportProps> = ({
           icon={Megaphone}
         />
       </div>
+
+      {/* Duplicate Row Protection Controls */}
+      {sources.some(s => s.type === 'SALES' || s.type === 'ADVERTISEMENT') && onToggleDeduplicate && (
+        <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-slate-700 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-gray-900 dark:text-white">
+                Duplicate Row &amp; Overlap Protection
+              </h4>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Automatically prevents double-counting if uploaded Sales or Ads sheets have overlapping dates.
+                {removedDuplicateCount > 0 && (
+                  <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                    ({removedDuplicateCount.toLocaleString()} duplicate rows filtered)
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 cursor-pointer select-none px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-slate-700/60 border border-gray-200 dark:border-slate-600 text-xs font-semibold text-gray-700 dark:text-gray-200 shrink-0">
+            <input
+              type="checkbox"
+              checked={deduplicateRows}
+              onChange={onToggleDeduplicate}
+              className="rounded text-emerald-600 focus:ring-emerald-500"
+            />
+            Auto-Deduplicate Overlapping Sheets
+          </label>
+        </div>
+      )}
 
       <div className="pt-6 border-t border-gray-200 dark:border-slate-800">
         <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-xl p-6 text-white flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg">

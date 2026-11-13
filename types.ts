@@ -29,6 +29,7 @@ export interface InventoryRecord {
 }
 
 export interface SalesRecord {
+  orderId?: string;
   itemId: string;
   itemName?: string;
   brandName?: string;
@@ -91,6 +92,22 @@ export interface DataSource {
   rowCount: number;
   rawContent?: string;
   parsedData?: (InventoryRecord | SalesRecord | AdvertisementRecord)[];
+  dateRange?: { start: string; end: string };
+  fileHash?: string;
+}
+
+export interface ProductCostConfig {
+  itemId: string;
+  costPrice: number; // COGS per unit in INR
+  commissionPct?: number; // Optional SKU override %
+  shippingFee?: number; // Optional SKU override INR
+}
+
+export interface GlobalProfitConfig {
+  defaultCogsPct: number; // Fallback % of ASP if SKU COGS not provided (e.g. 55%)
+  defaultCommissionPct: number; // Blinkit commission % (e.g. 15%)
+  defaultShippingPerUnit: number; // Avg handling/shipping fee per unit INR (e.g. 25)
+  gstOnFeesPct: number; // GST % on commission/fees (e.g. 18%)
 }
 
 export type FileType = 'INVENTORY' | 'SALES' | 'ADVERTISEMENT';
@@ -99,6 +116,9 @@ export enum ViewMode {
   DASHBOARD = 'DASHBOARD',
   INVENTORY_LIST = 'INVENTORY_LIST',
   ADS_ANALYTICS = 'ADS_ANALYTICS',
+  REPLENISHMENT = 'REPLENISHMENT',
+  PROFIT_ANALYTICS = 'PROFIT_ANALYTICS',
+  ACTION_ALERTS = 'ACTION_ALERTS',
   DATA_IMPORT = 'DATA_IMPORT',
   PRODUCT_DETAIL = 'PRODUCT_DETAIL',
   CITY_DETAIL = 'CITY_DETAIL',

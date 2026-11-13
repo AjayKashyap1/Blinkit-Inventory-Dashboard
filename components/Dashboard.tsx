@@ -1,19 +1,21 @@
 import React, { useMemo, useState } from 'react';
-import { InventoryRecord, MergedItem, SalesRecord } from '../types';
+import { InventoryRecord, MergedItem, SalesRecord, AdvertisementRecord } from '../types';
 import { aggregateByWarehouse, prepareSalesChartData, aggregateSalesByCity } from '../utils';
+import { ExecutiveSummaryModal } from './ExecutiveSummaryModal';
 import { 
   ComposedChart, Bar, BarChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   PieChart, Pie, Cell, Area
 } from 'recharts';
 import { 
   Package, AlertTriangle, TrendingUp, ArchiveX, Filter, IndianRupee, X, Download, 
-  Activity, BarChart2, Layers, MapPin, Search, ArrowUpDown, ShoppingBag, ExternalLink, ChevronRight, Check
+  Activity, BarChart2, Layers, MapPin, Search, ArrowUpDown, ShoppingBag, ExternalLink, ChevronRight, Check, FileText
 } from 'lucide-react';
 
 interface DashboardProps {
   mergedData: MergedItem[];
   rawInventory: InventoryRecord[];
   salesData: SalesRecord[];
+  adsData?: AdvertisementRecord[];
   onSelectProduct: (itemId: string) => void;
   onSelectCity?: (city: string) => void;
 }
@@ -26,7 +28,7 @@ const STATUS_COLORS: {[key: string]: string} = {
   'Stockout': '#EF4444'
 };
 
-export const Dashboard: React.FC<DashboardProps> = ({ mergedData, rawInventory, salesData, onSelectProduct, onSelectCity }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ mergedData, rawInventory, salesData, adsData = [], onSelectProduct, onSelectCity }) => {
   const [chartPeriod, setChartPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [chartType, setChartType] = useState<'mixed' | 'line' | 'bar'>('mixed');
   const [filters, setFilters] = useState({
@@ -37,6 +39,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ mergedData, rawInventory, 
     endDate: ''
   });
   const [showFilters, setShowFilters] = useState(false);
+  const [showExecutiveModal, setShowExecutiveModal] = useState(false);
 
   // City Breakdown Modal States
   const [selectedCityForModal, setSelectedCityForModal] = useState<string | null>(null);
@@ -332,17 +335,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ mergedData, rawInventory, 
           <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Inventory & Sales Intelligence</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400">Analysis based on imported Sales Report & Inventory Sheet</p>
         </div>
-        <button 
-          onClick={() => setShowFilters(!showFilters)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-            showFilters 
-              ? 'bg-slate-800 text-white dark:bg-yellow-400 dark:text-slate-900 font-medium' 
-              : 'bg-white dark:bg-slate-800 border border-gray-300 dark:border-slate-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700'
-          }`}
-        >
-          <Filter className="w-4 h-4" />
-          Filters {filters.brand !== 'All' || filters.status !== 'All' || filters.warehouse !== 'All' || filters.startDate || filters.endDate ? '(Active)' : ''}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowExecutiveModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-sm shadow-sm transition-colors"
+          >
+            <FileText className="w-4 h-4" />
+            Executive Report
+          </button>
+          <button 
+            onClick={() => setShowFilters(!showFilters)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+              showFilters 
+                ? 'bg-slate-800 text-white dark:bg-yellow-400 dark:text-slate-900 font-medium' 
+                : 'bg-white dark:bg-slate-800 border border-gray-300 dark:border-slate-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700'
+            }`}
+          >
+            <Filter className="w-4 h-4" />
+            Filters {filters.brand !== 'All' || filters.status !== 'All' || filters.warehouse !== 'All' || filters.startDate || filters.endDate ? '(Active)' : ''}
+          </button>
+        </div>
       </div>
 
       {/* Multi-Filter Panel */}
@@ -1073,6 +1085,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ mergedData, rawInventory, 
           </div>
         </div>
       )}
+
+      {/* Executive Summary Report Modal (PDF & WhatsApp) */}
+      <ExecutiveSummaryModal
+        isOpen={showExecutiveModal}
+        onClose={() => setShowExecutiveModal(false)}
+        totalRevenue={totalRevenue}
+        totalUnitsSold={totalSalesVelocity}
+        averageASP={averageASP}
+        totalSellable={totalSellable}
+        totalUnsellable={totalUnsellable}
+        topProducts={topRevenueItems}
+        topCities={allCityStats}
+        filteredItems={filteredData}
+        adsData={adsData}
+        activeFilters={filters}
+      />
     </div>
   );
 };

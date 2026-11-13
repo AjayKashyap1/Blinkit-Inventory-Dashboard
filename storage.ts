@@ -1,9 +1,55 @@
-import { DataSource } from './types';
+import { DataSource, ProductCostConfig, GlobalProfitConfig } from './types';
 
 const DB_NAME = 'blinkit_analytics_db';
 const DB_VERSION = 1;
 const STORE_NAME = 'data_sources';
 const FALLBACK_KEY = 'blinkit_saved_sources_v1';
+const COSTS_KEY = 'blinkit_sku_costs_v1';
+const GLOBAL_PROFIT_KEY = 'blinkit_global_profit_config_v1';
+
+export const DEFAULT_GLOBAL_PROFIT_CONFIG: GlobalProfitConfig = {
+  defaultCogsPct: 55,
+  defaultCommissionPct: 15,
+  defaultShippingPerUnit: 25,
+  gstOnFeesPct: 18,
+};
+
+export const loadProductCosts = (): Record<string, ProductCostConfig> => {
+  try {
+    const raw = window.localStorage.getItem(COSTS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+export const saveProductCosts = (costs: Record<string, ProductCostConfig>): void => {
+  try {
+    window.localStorage.setItem(COSTS_KEY, JSON.stringify(costs));
+  } catch (err) {
+    console.error('Failed to save SKU costs locally:', err);
+  }
+};
+
+export const loadGlobalProfitConfig = (): GlobalProfitConfig => {
+  try {
+    const raw = window.localStorage.getItem(GLOBAL_PROFIT_KEY);
+    if (!raw) return DEFAULT_GLOBAL_PROFIT_CONFIG;
+    return { ...DEFAULT_GLOBAL_PROFIT_CONFIG, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_GLOBAL_PROFIT_CONFIG;
+  }
+};
+
+export const saveGlobalProfitConfig = (config: GlobalProfitConfig): void => {
+  try {
+    window.localStorage.setItem(GLOBAL_PROFIT_KEY, JSON.stringify(config));
+  } catch (err) {
+    console.error('Failed to save global profit config locally:', err);
+  }
+};
 
 const openDatabase = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {

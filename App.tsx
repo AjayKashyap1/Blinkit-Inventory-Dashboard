@@ -6,9 +6,21 @@ import { DataImport } from './components/DataImport';
 import { ProductDetail } from './components/ProductDetail';
 import { AdsAnalytics } from './components/AdsAnalytics';
 import { CityDetail } from './components/CityDetail';
-import { parseInventoryCSV, parseSalesCSV, parseAdsCSV, readFileAsText, readExcelAsCSV, mergeData } from './utils';
-import { loadSourcesFromStorage, saveSourcesToStorage, clearSourcesStorage } from './storage';
-import { InventoryRecord, SalesRecord, AdvertisementRecord, ViewMode, DataSource, FileType, MergedItem } from './types';
+import { ReplenishmentPlanner } from './components/ReplenishmentPlanner';
+import { ProfitAnalytics } from './components/ProfitAnalytics';
+import { ActionAlerts } from './components/ActionAlerts';
+import { 
+  parseInventoryCSV, parseSalesCSV, parseAdsCSV, readFileAsText, readExcelAsCSV, 
+  mergeData, computeContentHash, extractDateRange, deduplicateSalesAcrossSheets, deduplicateAdsAcrossSheets
+} from './utils';
+import { 
+  loadSourcesFromStorage, saveSourcesToStorage, clearSourcesStorage,
+  loadProductCosts, saveProductCosts, loadGlobalProfitConfig, saveGlobalProfitConfig
+} from './storage';
+import { 
+  InventoryRecord, SalesRecord, AdvertisementRecord, ViewMode, DataSource, FileType, 
+  MergedItem, ProductCostConfig, GlobalProfitConfig 
+} from './types';
 import { RAW_CSV_DATA, RAW_SALES_DATA } from './constants';
 
 const App: React.FC = () => {
@@ -19,6 +31,16 @@ const App: React.FC = () => {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const [deduplicateRows, setDeduplicateRows] = useState<boolean>(() => {
+    try {
+      const saved = window.localStorage.getItem('blinkit_deduplicate_rows');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const [productCosts, setProductCosts] = useState<Record<string, ProductCostConfig>>(() => loadProductCosts());
+  const [globalProfitConfig, setGlobalProfitConfig] = useState<GlobalProfitConfig>(() => loadGlobalProfitConfig());
 
   // Initialize theme from localStorage or system preference
   useEffect(() => {
@@ -82,23 +104,58 @@ const App: React.FC = () => {
     });
   }, [sources, hasHydrated]);
 
+  const handleToggleDeduplicate = () => {
+    setDeduplicateRows(prev => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('blinkit_deduplicate_rows', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateProductCosts = (next: Record<string, ProductCostConfig>) => {
+    setProductCosts(next);
+    saveProductCosts(next);
+  };
+
+  const handleUpdateGlobalProfitConfig = (next: GlobalProfitConfig) => {
+    setGlobalProfitConfig(next);
+    saveGlobalProfitConfig(next);
+  };
+
   // Derived active data sets
   const activeInventoryData = useMemo(() => {
     const invSource = sources.find(s => s.type === 'INVENTORY' && s.isActive);
     return (invSource?.parsedData as InventoryRecord[]) || [];
   }, [sources]);
 
-  const activeSalesData = useMemo(() => {
-    return sources
+  const salesAggregation = useMemo(() => {
+    const activeSheets = sources
       .filter(s => s.type === 'SALES' && s.isActive)
-      .flatMap(s => (s.parsedData as SalesRecord[]) || []);
-  }, [sources]);
+      .map(s => (s.parsedData as SalesRecord[]) || []);
+    if (!deduplicateRows || activeSheets.length <= 1) {
+      return { records: activeSheets.flat(), removedCount: 0 };
+    }
+    return deduplicateSalesAcrossSheets(activeSheets);
+  }, [sources, deduplicateRows]);
 
-  const activeAdsData = useMemo(() => {
-    return sources
+  const activeSalesData = salesAggregation.records;
+
+  const adsAggregation = useMemo(() => {
+    const activeSheets = sources
       .filter(s => s.type === 'ADVERTISEMENT' && s.isActive)
-      .flatMap(s => (s.parsedData as AdvertisementRecord[]) || []);
-  }, [sources]);
+      .map(s => (s.parsedData as AdvertisementRecord[]) || []);
+    if (!deduplicateRows || activeSheets.length <= 1) {
+      return { records: activeSheets.flat(), removedCount: 0 };
+    }
+    return deduplicateAdsAcrossSheets(activeSheets);
+  }, [sources, deduplicateRows]);
+
+  const activeAdsData = adsAggregation.records;
+  const totalRemovedDuplicateCount = salesAggregation.removedCount + adsAggregation.removedCount;
 
   // Derived merged data for dashboard
   const mergedData = useMemo(() => {
@@ -144,6 +201,14 @@ const App: React.FC = () => {
   };
 
   const processFileContent = (content: string, type: FileType, fileName: string) => {
+    const fileHash = computeContentHash(content);
+    if (type !== 'INVENTORY') {
+      const duplicate = sources.find(s => s.type === type && (s.fileHash === fileHash || (s.rawContent && computeContentHash(s.rawContent) === fileHash)));
+      if (duplicate) {
+        throw new Error(`Duplicate Sheet Detected: "${fileName}" has identical data to already uploaded "${duplicate.fileName}".`);
+      }
+    }
+
     let records: (InventoryRecord | SalesRecord | AdvertisementRecord)[] = [];
     
     if (type === 'INVENTORY') {
@@ -154,6 +219,11 @@ const App: React.FC = () => {
       records = parseAdsCSV(content);
     }
 
+    const dateRange =
+      type === 'SALES' || type === 'ADVERTISEMENT'
+        ? extractDateRange(records as (SalesRecord | AdvertisementRecord)[])
+        : undefined;
+
     const newSource: DataSource = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       type,
@@ -162,7 +232,9 @@ const App: React.FC = () => {
       isActive: true,
       rowCount: records.length,
       rawContent: content,
-      parsedData: records
+      parsedData: records,
+      dateRange,
+      fileHash,
     };
 
     setSources(prev => {
@@ -200,6 +272,12 @@ const App: React.FC = () => {
   ) => {
     const newSources: DataSource[] = [];
     const errors: string[] = [];
+    const existingHashes = new Set(
+      sources
+        .filter(s => s.type === type)
+        .map(s => s.fileHash || (s.rawContent ? computeContentHash(s.rawContent) : ''))
+        .filter(Boolean)
+    );
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -216,6 +294,13 @@ const App: React.FC = () => {
           throw new Error(`Unsupported format for ${file.name}. Use .csv or .xlsx`);
         }
 
+        const fileHash = computeContentHash(content);
+        if (type !== 'INVENTORY' && existingHashes.has(fileHash)) {
+          errors.push(`${file.name}: Skipped (Exact duplicate already uploaded)`);
+          continue;
+        }
+        existingHashes.add(fileHash);
+
         let records: (InventoryRecord | SalesRecord | AdvertisementRecord)[] = [];
         if (type === 'INVENTORY') {
           records = parseInventoryCSV(content);
@@ -225,6 +310,11 @@ const App: React.FC = () => {
           records = parseAdsCSV(content);
         }
 
+        const dateRange =
+          type === 'SALES' || type === 'ADVERTISEMENT'
+            ? extractDateRange(records as (SalesRecord | AdvertisementRecord)[])
+            : undefined;
+
         newSources.push({
           id: `${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`,
           type,
@@ -233,7 +323,9 @@ const App: React.FC = () => {
           isActive: true,
           rowCount: records.length,
           rawContent: content,
-          parsedData: records
+          parsedData: records,
+          dateRange,
+          fileHash,
         });
       } catch (err: any) {
         console.error(`Error processing ${file.name}:`, err);
@@ -252,7 +344,7 @@ const App: React.FC = () => {
     }
 
     if (errors.length > 0) {
-      throw new Error(`Imported ${newSources.length} file(s). ${errors.length} failed:\n${errors.join('\n')}`);
+      throw new Error(`Imported ${newSources.length} file(s). ${errors.length} skipped/failed:\n${errors.join('\n')}`);
     }
   };
 
@@ -361,6 +453,7 @@ const App: React.FC = () => {
             mergedData={mergedData} 
             rawInventory={activeInventoryData} 
             salesData={activeSalesData}
+            adsData={activeAdsData}
             onSelectProduct={handleSelectProduct}
             onSelectCity={handleSelectCity}
           />
@@ -383,6 +476,35 @@ const App: React.FC = () => {
       {viewMode === ViewMode.INVENTORY_LIST && (
         <InventoryTable 
           data={inventoryWithSalesData} 
+          onSelectProduct={handleSelectProduct}
+        />
+      )}
+
+      {viewMode === ViewMode.REPLENISHMENT && (
+        <ReplenishmentPlanner
+          inventoryData={activeInventoryData}
+          salesData={activeSalesData}
+          onSelectProduct={handleSelectProduct}
+        />
+      )}
+
+      {viewMode === ViewMode.PROFIT_ANALYTICS && (
+        <ProfitAnalytics
+          salesData={activeSalesData}
+          inventoryData={activeInventoryData}
+          adsData={activeAdsData}
+          productCosts={productCosts}
+          onUpdateProductCosts={handleUpdateProductCosts}
+          globalConfig={globalProfitConfig}
+          onUpdateGlobalConfig={handleUpdateGlobalProfitConfig}
+          onSelectProduct={handleSelectProduct}
+        />
+      )}
+
+      {viewMode === ViewMode.ACTION_ALERTS && (
+        <ActionAlerts
+          inventoryData={activeInventoryData}
+          mergedData={mergedData}
           onSelectProduct={handleSelectProduct}
         />
       )}
@@ -438,6 +560,9 @@ const App: React.FC = () => {
           onToggle={handleToggleSource}
           onLoadSample={handleLoadSample}
           onRefresh={handleRefreshData}
+          deduplicateRows={deduplicateRows}
+          onToggleDeduplicate={handleToggleDeduplicate}
+          removedDuplicateCount={totalRemovedDuplicateCount}
         />
       )}
     </Layout>

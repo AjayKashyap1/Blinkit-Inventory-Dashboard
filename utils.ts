@@ -114,7 +114,7 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
   const lines = csvContent.trim().split('\n');
   const records: SalesRecord[] = [];
   
-  let idIndex = -1, qtyIndex = -1, revIndex = -1, nameIndex = -1, brandIndex = -1, dateIndex = -1, cityIndex = -1;
+  let idIndex = -1, qtyIndex = -1, revIndex = -1, nameIndex = -1, brandIndex = -1, dateIndex = -1, cityIndex = -1, orderIdIndex = -1;
   
   const headerRow = lines.find(l => {
     const lower = l.toLowerCase();
@@ -131,6 +131,7 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
   brandIndex = headers.findIndex(h => h.includes('brand name'));
   dateIndex = headers.findIndex(h => h.includes('order date') || h.includes('date'));
   cityIndex = headers.findIndex(h => h.includes('customer city') || (h.includes('city') && !h.includes('supply')));
+  orderIdIndex = headers.findIndex(h => h.includes('order id') || h === 'order_id');
 
   const startIndex = lines.indexOf(headerRow) + 1;
 
@@ -141,6 +142,7 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
     if (values.length <= Math.max(idIndex, qtyIndex)) continue;
 
     records.push({
+      orderId: orderIdIndex > -1 ? cleanString(values[orderIdIndex]) || undefined : undefined,
       itemId: cleanString(values[idIndex]),
       itemName: nameIndex > -1 ? cleanString(values[nameIndex]) : undefined,
       brandName: brandIndex > -1 ? cleanString(values[brandIndex]) : undefined,
@@ -433,4 +435,111 @@ export const aggregateAdsData = (records: AdvertisementRecord[]) => {
     monthly: Array.from(monthlyMap.values()),
     totals: { totalSpend, totalSales, totalImpressions, totalRoas }
   };
+};
+
+// --- Duplicate Protection & Date Range Helpers ---
+
+export const computeContentHash = (content: string): string => {
+  const normalized = content.trim();
+  let hash = 2166136261;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${(hash >>> 0).toString(16)}-${normalized.length}`;
+};
+
+export const extractDateRange = (
+  records: (SalesRecord | AdvertisementRecord)[]
+): { start: string; end: string } | undefined => {
+  let minDate = '';
+  let maxDate = '';
+
+  for (const r of records) {
+    const d = r.date?.trim();
+    if (!d || !/^\d{4}-\d{2}-\d{2}/.test(d)) continue;
+    const cleanDate = d.substring(0, 10);
+    if (!minDate || cleanDate < minDate) minDate = cleanDate;
+    if (!maxDate || cleanDate > maxDate) maxDate = cleanDate;
+  }
+
+  return minDate && maxDate ? { start: minDate, end: maxDate } : undefined;
+};
+
+export const doDateRangesOverlap = (
+  a?: { start: string; end: string },
+  b?: { start: string; end: string }
+): boolean => {
+  if (!a || !b) return false;
+  return a.start <= b.end && b.start <= a.end;
+};
+
+export const deduplicateSalesAcrossSheets = (
+  sheetRecordLists: SalesRecord[][]
+): { records: SalesRecord[]; removedCount: number } => {
+  if (sheetRecordLists.length <= 1) {
+    return { records: sheetRecordLists[0] || [], removedCount: 0 };
+  }
+
+  const seenOrderKeys = new Set<string>();
+  const seenRowSignaturesFromPrevSheets = new Set<string>();
+  const result: SalesRecord[] = [];
+  let removedCount = 0;
+
+  for (const sheetRows of sheetRecordLists) {
+    const currentSheetSignatures: string[] = [];
+
+    for (const row of sheetRows) {
+      if (row.orderId) {
+        const orderKey = `${row.orderId}__${row.itemId}__${row.quantity}__${row.revenue}`;
+        if (seenOrderKeys.has(orderKey)) {
+          removedCount++;
+          continue;
+        }
+        seenOrderKeys.add(orderKey);
+        result.push(row);
+      } else {
+        // When Order Id is unavailable, only deduplicate identical rows across DIFFERENT sheets
+        const sig = `${row.date || ''}__${row.itemId}__${row.customerCity || ''}__${row.quantity}__${row.revenue}`;
+        if (seenRowSignaturesFromPrevSheets.has(sig)) {
+          removedCount++;
+          continue;
+        }
+        currentSheetSignatures.push(sig);
+        result.push(row);
+      }
+    }
+
+    for (const sig of currentSheetSignatures) {
+      seenRowSignaturesFromPrevSheets.add(sig);
+    }
+  }
+
+  return { records: result, removedCount };
+};
+
+export const deduplicateAdsAcrossSheets = (
+  sheetRecordLists: AdvertisementRecord[][]
+): { records: AdvertisementRecord[]; removedCount: number } => {
+  if (sheetRecordLists.length <= 1) {
+    return { records: sheetRecordLists[0] || [], removedCount: 0 };
+  }
+
+  const seenKeys = new Set<string>();
+  const result: AdvertisementRecord[] = [];
+  let removedCount = 0;
+
+  for (const sheetRows of sheetRecordLists) {
+    for (const row of sheetRows) {
+      const key = `${row.date}__${row.campaignId}__${row.targetingType}__${row.targetingValue}__${row.matchType}__${row.spend}__${row.impressions}`;
+      if (seenKeys.has(key)) {
+        removedCount++;
+        continue;
+      }
+      seenKeys.add(key);
+      result.push(row);
+    }
+  }
+
+  return { records: result, removedCount };
 };
