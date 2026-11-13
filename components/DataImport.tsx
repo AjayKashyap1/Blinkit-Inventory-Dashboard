@@ -12,6 +12,7 @@ interface DataImportProps {
   onBatchUpload?: (files: File[], type: FileType, onProgress?: (current: number, total: number, fileName: string) => void) => Promise<void>;
   onRemove: (id: string) => void;
   onRemoveAllByType?: (type: FileType) => void;
+  onClearAll?: () => void;
   onToggle: (id: string) => void;
   onLoadSample: () => void;
   onRefresh: () => void;
@@ -23,6 +24,7 @@ export const DataImport: React.FC<DataImportProps> = ({
   onBatchUpload,
   onRemove, 
   onRemoveAllByType,
+  onClearAll,
   onToggle, 
   onLoadSample, 
   onRefresh 
@@ -31,6 +33,8 @@ export const DataImport: React.FC<DataImportProps> = ({
   const [error, setError] = useState<{ type: FileType; message: string } | null>(null);
   const [successMessage, setSuccessMessage] = useState<{ type: FileType; message: string } | null>(null);
   const [dragOverType, setDragOverType] = useState<FileType | null>(null);
+  const [confirmClearType, setConfirmClearType] = useState<FileType | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
     total: number;
@@ -269,17 +273,33 @@ export const DataImport: React.FC<DataImportProps> = ({
               <span className="text-gray-400 font-normal">({totalRows.toLocaleString()} rows)</span>
             </span>
             {multiple && onRemoveAllByType && existingFiles.length > 1 && (
-              <button 
-                onClick={() => {
-                  if (confirm(`Remove all ${existingFiles.length} ${title} sheets?`)) {
-                    onRemoveAllByType(type);
-                  }
-                }}
-                className="text-[11px] text-red-500 hover:text-red-700 hover:underline flex items-center gap-1"
-                title="Remove all uploaded sheets of this category"
-              >
-                Clear All
-              </button>
+              confirmClearType === type ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => {
+                      onRemoveAllByType(type);
+                      setConfirmClearType(null);
+                    }}
+                    className="text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 px-2 py-0.5 rounded transition-colors"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    onClick={() => setConfirmClearType(null)}
+                    className="text-[11px] text-gray-500 hover:text-gray-700 dark:text-gray-400"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button 
+                  onClick={() => setConfirmClearType(type)}
+                  className="text-[11px] text-red-500 hover:text-red-700 hover:underline flex items-center gap-1"
+                  title="Remove all uploaded sheets of this category"
+                >
+                  Clear All
+                </button>
+              )
             )}
           </div>
         )}
@@ -296,7 +316,7 @@ export const DataImport: React.FC<DataImportProps> = ({
                   {!file.isActive && <span className="text-[10px] text-red-500 font-medium px-1 bg-red-50 dark:bg-red-900/30 rounded">(Hidden)</span>}
                 </div>
                 <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
-                   {file.rowCount.toLocaleString()} rows • {new Date(file.uploadDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                   {file.rowCount.toLocaleString()} rows • {new Date(file.uploadDate).toLocaleDateString([], { day: '2-digit', month: 'short' })}, {new Date(file.uploadDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </div>
               </div>
               <div className="flex gap-1 shrink-0">
@@ -371,17 +391,49 @@ export const DataImport: React.FC<DataImportProps> = ({
             </span>
           </div>
           <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
-            Upload single or multiple Blinkit reports (Inventory, Sales & Ads). You can select multiple sheets at once.
+            Upload single or multiple Blinkit reports (Inventory, Sales & Ads). All uploaded sheets are automatically saved locally in your browser.
           </p>
         </div>
         {sources.length > 0 && (
-          <button 
-            onClick={onRefresh}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-200 rounded-lg transition-colors text-sm font-medium shrink-0"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Refresh All Data
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button 
+              onClick={onRefresh}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-200 rounded-lg transition-colors text-sm font-medium"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Refresh All Data
+            </button>
+            {onClearAll && (
+              confirmClearAll ? (
+                <div className="flex items-center gap-1.5 bg-red-50 dark:bg-red-950/40 px-2.5 py-1.5 rounded-lg border border-red-200 dark:border-red-800">
+                  <button
+                    onClick={() => {
+                      onClearAll();
+                      setConfirmClearAll(false);
+                    }}
+                    className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold transition-colors"
+                  >
+                    Confirm Clear
+                  </button>
+                  <button
+                    onClick={() => setConfirmClearAll(false)}
+                    className="px-2 py-1 text-xs text-gray-600 dark:text-gray-300 hover:text-gray-900"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmClearAll(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 rounded-lg transition-colors text-sm font-medium"
+                  title="Remove all saved sheets from local storage"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Clear Saved
+                </button>
+              )
+            )}
+          </div>
         )}
       </div>
 

@@ -7,23 +7,80 @@ import { ProductDetail } from './components/ProductDetail';
 import { AdsAnalytics } from './components/AdsAnalytics';
 import { CityDetail } from './components/CityDetail';
 import { parseInventoryCSV, parseSalesCSV, parseAdsCSV, readFileAsText, readExcelAsCSV, mergeData } from './utils';
+import { loadSourcesFromStorage, saveSourcesToStorage, clearSourcesStorage } from './storage';
 import { InventoryRecord, SalesRecord, AdvertisementRecord, ViewMode, DataSource, FileType, MergedItem } from './types';
 import { RAW_CSV_DATA, RAW_SALES_DATA } from './constants';
 
 const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.DATA_IMPORT);
   const [sources, setSources] = useState<DataSource[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
 
-  // Initialize theme from system preference or default to light
+  // Initialize theme from localStorage or system preference
   useEffect(() => {
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      setIsDarkMode(true);
+    try {
+      const savedTheme = window.localStorage.getItem('blinkit_dark_mode');
+      if (savedTheme !== null) {
+        setIsDarkMode(savedTheme === 'true');
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        setIsDarkMode(true);
+      }
+    } catch {
+      // ignore storage errors
     }
   }, []);
+
+  const handleToggleTheme = () => {
+    setIsDarkMode(prev => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('blinkit_dark_mode', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  // Load saved sheets from local IndexedDB storage on startup
+  useEffect(() => {
+    let mounted = true;
+    const hydrate = async () => {
+      try {
+        const savedSources = await loadSourcesFromStorage();
+        if (!mounted) return;
+        if (savedSources.length > 0) {
+          setSources(savedSources);
+          if (savedSources.some(s => s.isActive)) {
+            setViewMode(ViewMode.DASHBOARD);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load locally saved sheets:', err);
+      } finally {
+        if (mounted) {
+          setHasHydrated(true);
+          setLoading(false);
+        }
+      }
+    };
+    hydrate();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Automatically persist changes to local IndexedDB storage
+  useEffect(() => {
+    if (!hasHydrated) return;
+    saveSourcesToStorage(sources).catch(err => {
+      console.error('Failed to persist sheets locally:', err);
+    });
+  }, [sources, hasHydrated]);
 
   // Derived active data sets
   const activeInventoryData = useMemo(() => {
@@ -250,7 +307,7 @@ const App: React.FC = () => {
   const handleRefreshData = async () => {
     setLoading(true);
     try {
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise(resolve => setTimeout(resolve, 400));
       setSources(prev => prev.map(source => {
         if (!source.rawContent) return source;
         let records: any[] = [];
@@ -263,10 +320,8 @@ const App: React.FC = () => {
         }
         return { ...source, rowCount: records.length, parsedData: records };
       }));
-      alert("Data refreshed successfully.");
     } catch (e) {
       console.error("Refresh failed", e);
-      alert("Failed to refresh data.");
     } finally {
       setLoading(false);
     }
@@ -274,6 +329,11 @@ const App: React.FC = () => {
 
   const handleRemoveSource = (id: string) => {
     setSources(prev => prev.filter(s => s.id !== id));
+  };
+
+  const handleClearAllSources = async () => {
+    setSources([]);
+    await clearSourcesStorage();
   };
 
   const handleToggleSource = (id: string) => {
@@ -285,14 +345,16 @@ const App: React.FC = () => {
       <div className={`h-screen w-full flex items-center justify-center ${isDarkMode ? 'bg-slate-900' : 'bg-gray-50'}`}>
         <div className="flex flex-col items-center gap-4">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-yellow-400"></div>
-          <p className={`font-medium animate-pulse ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Processing Data...</p>
+          <p className={`font-medium animate-pulse ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+            {hasHydrated ? 'Processing Data...' : 'Loading Saved Reports...'}
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <Layout currentMode={viewMode} setMode={setViewMode} isDarkMode={isDarkMode} toggleTheme={() => setIsDarkMode(!isDarkMode)}>
+    <Layout currentMode={viewMode} setMode={setViewMode} isDarkMode={isDarkMode} toggleTheme={handleToggleTheme}>
       {viewMode === ViewMode.DASHBOARD && (
         sources.some(s => s.isActive) ? (
           <Dashboard 
@@ -372,6 +434,7 @@ const App: React.FC = () => {
           onBatchUpload={handleBatchUpload}
           onRemove={handleRemoveSource}
           onRemoveAllByType={handleRemoveAllByType}
+          onClearAll={handleClearAllSources}
           onToggle={handleToggleSource}
           onLoadSample={handleLoadSample}
           onRefresh={handleRefreshData}
