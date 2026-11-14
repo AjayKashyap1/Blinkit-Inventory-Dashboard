@@ -16,6 +16,8 @@ export const DEFAULT_GLOBAL_PROFIT_CONFIG: GlobalProfitConfig = {
   t2DiscountPct: 10,
   t3DiscountPct: 5,
   t4DiscountPct: 5,
+  tcsPct: 0,
+  tdsPct: 0,
 };
 
 export const loadProductCosts = (): Record<string, ProductCostConfig> => {

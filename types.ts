@@ -34,9 +34,28 @@ export interface SalesRecord {
   itemName?: string;
   brandName?: string;
   quantity: number;
-  revenue: number;
+  revenue: number; // Total Gross Bill / Invoice Amount
   date?: string; // YYYY-MM-DD
+  customerName?: string;
+  customerAddress?: string;
   customerCity?: string;
+  customerState?: string;
+  supplyCity?: string;
+  supplyState?: string;
+  orderStatus?: string;
+  mrp?: number;
+  sellingPrice?: number;
+  igst?: number;
+  cgst?: number;
+  sgst?: number;
+  totalTax?: number;
+  commissionCharge?: number;
+  shippingCharge?: number;
+  feeGstCharge?: number;
+  tcsCharge?: number;
+  tdsCharge?: number;
+  otherCharges?: number;
+  receivedAmount?: number;
 }
 
 export interface AdvertisementRecord {
@@ -116,6 +135,8 @@ export interface GlobalProfitConfig {
   t2DiscountPct?: number; // T2 = T1 - 10%
   t3DiscountPct?: number; // T3 = T2 - 5%
   t4DiscountPct?: number; // T4 = T3 - 5%
+  tcsPct?: number; // Optional TCS % on net taxable / invoice
+  tdsPct?: number; // Optional TDS % u/s 194-O
 }
 
 export type FileType = 'INVENTORY' | 'SALES' | 'ADVERTISEMENT';
@@ -123,10 +144,11 @@ export type FileType = 'INVENTORY' | 'SALES' | 'ADVERTISEMENT';
 export enum ViewMode {
   DASHBOARD = 'DASHBOARD',
   INVENTORY_LIST = 'INVENTORY_LIST',
-  ADS_ANALYTICS = 'ADS_ANALYTICS',
+  ORDER_DETAILS = 'ORDER_DETAILS',
   REPLENISHMENT = 'REPLENISHMENT',
   PROFIT_ANALYTICS = 'PROFIT_ANALYTICS',
   ACTION_ALERTS = 'ACTION_ALERTS',
+  ADS_ANALYTICS = 'ADS_ANALYTICS',
   DATA_IMPORT = 'DATA_IMPORT',
   PRODUCT_DETAIL = 'PRODUCT_DETAIL',
   CITY_DETAIL = 'CITY_DETAIL',

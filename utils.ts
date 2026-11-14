@@ -18,10 +18,10 @@ export const readExcelAsCSV = (file: File): Promise<string> => {
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
-        const csv = XLSX.utils.sheet_to_csv(worksheet);
+        const csv = XLSX.utils.sheet_to_csv(worksheet, { dateNF: 'yyyy-mm-dd' });
         resolve(csv);
       } catch (err) {
         reject(new Error("Failed to parse Excel file. Ensure it is not password protected."));
@@ -179,8 +179,6 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
   const lines = csvContent.trim().split('\n');
   const records: SalesRecord[] = [];
   
-  let idIndex = -1, qtyIndex = -1, revIndex = -1, nameIndex = -1, brandIndex = -1, dateIndex = -1, cityIndex = -1, orderIdIndex = -1;
-  
   const headerRow = lines.find(l => {
     const lower = l.toLowerCase();
     return (lower.includes('item id') || lower.includes('sku')) && (lower.includes('quantity') || lower.includes('qty'));
@@ -189,14 +187,44 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
   if (!headerRow) throw new Error("Invalid Sales File: Missing required columns ('Item Id', 'Quantity').");
 
   const headers = headerRow.toLowerCase().split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.trim().replace(/"/g, ''));
-  idIndex = headers.findIndex(h => h.includes('item id') || h.includes('sku') || h.includes('identifier'));
-  qtyIndex = headers.findIndex(h => h.includes('quantity') || h.includes('qty') || h.includes('sold'));
-  revIndex = headers.findIndex(h => h.includes('bill amount') || h.includes('revenue') || h.includes('total amount') || h.includes('total gross'));
-  nameIndex = headers.findIndex(h => h.includes('product name') || h.includes('item name'));
-  brandIndex = headers.findIndex(h => h.includes('brand name'));
-  dateIndex = headers.findIndex(h => h.includes('order date') || h.includes('date'));
-  cityIndex = headers.findIndex(h => h.includes('customer city') || (h.includes('city') && !h.includes('supply')));
-  orderIdIndex = headers.findIndex(h => h.includes('order id') || h === 'order_id');
+
+  const idIndex = headers.findIndex(h => h.includes('item id') || h.includes('sku') || h.includes('identifier'));
+  const qtyIndex = headers.findIndex(h => h.includes('quantity') || h.includes('qty') || h.includes('sold'));
+  const revIndex = headers.findIndex(h => h.includes('bill amount') || h.includes('invoice amount') || h.includes('revenue') || h.includes('total amount') || h.includes('total gross'));
+  const nameIndex = headers.findIndex(h => h.includes('product name') || h.includes('item name'));
+  const brandIndex = headers.findIndex(h => h.includes('brand name'));
+  const dateIndex = headers.findIndex(h => h.includes('order date') || h.includes('invoice date') || h.includes('date'));
+  const cityIndex = headers.findIndex(h => h.includes('customer city') || (h.includes('city') && !h.includes('supply')));
+  const stateIndex = headers.findIndex(h => h.includes('customer state') || h === 'state' || (h.includes('state') && !h.includes('supply') && !h.includes('gst')));
+  const supplyCityIndex = headers.findIndex(h => h.includes('supply city'));
+  const supplyStateIndex = headers.findIndex(h => h === 'supply state' || (h.includes('supply state') && !h.includes('gst')));
+  const custNameIndex = headers.findIndex(h => h.includes('customer name') || h.includes('buyer name') || h.includes('recipient name') || h === 'customer');
+  const addressIndex = headers.findIndex(h => h.includes('customer address') || h.includes('delivery address') || h.includes('shipping address') || h === 'address' || h.includes('pincode') || h.includes('pin code'));
+  const statusIndex = headers.findIndex(h => h.includes('order status') || h === 'status');
+  const orderIdIndex = headers.findIndex(h => h.includes('order id') || h === 'order_id' || h.includes('order no') || h.includes('order number'));
+  const mrpIndex = headers.findIndex(h => h === 'mrp' || h.includes('mrp ('));
+  const sellingPriceIndex = headers.findIndex(h => h.includes('selling price') || h === 'unit price');
+  const igstIndex = headers.findIndex(h => h.includes('igst value') || h.includes('igst amount') || h === 'igst');
+  const cgstIndex = headers.findIndex(h => h.includes('cgst value') || h.includes('cgst amount') || h === 'cgst');
+  const sgstIndex = headers.findIndex(h => h.includes('sgst value') || h.includes('sgst amount') || h === 'sgst');
+  const totalTaxIndex = headers.findIndex(h => h.includes('total tax') || h === 'tax');
+
+  // Optional settlement/charge columns if present in uploaded sheet
+  const commChargeIndex = headers.findIndex(h => h.includes('commission') && !h.includes('%'));
+  const shipChargeIndex = headers.findIndex(h => (h.includes('shipping') || h.includes('fulfillment') || h.includes('handling') || h.includes('logistics')) && !h.includes('%'));
+  const feeGstIndex = headers.findIndex(h => h.includes('gst on fee') || h.includes('tax on fee') || h.includes('fee gst'));
+  const tcsIndex = headers.findIndex(h => h === 'tcs' || h.includes('tcs amount') || h.includes('tcs value'));
+  const tdsIndex = headers.findIndex(h => h === 'tds' || h.includes('tds amount') || h.includes('tds value'));
+  const otherChargeIndex = headers.findIndex(h => h.includes('other charge') || h.includes('deduction') || h.includes('penalty'));
+  const receivedIndex = headers.findIndex(h => h.includes('received amount') || h.includes('net payout') || h.includes('settlement amount') || h.includes('payable amount') || h === 'net received');
+
+  const optNum = (values: string[], idx: number): number | undefined => {
+    if (idx <= -1 || values[idx] === undefined) return undefined;
+    const raw = cleanString(values[idx]);
+    if (!raw) return undefined;
+    const num = parseFloat(raw.replace(/,/g, ''));
+    return isNaN(num) ? undefined : num;
+  };
 
   const startIndex = lines.indexOf(headerRow) + 1;
 
@@ -206,15 +234,37 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
     
     if (values.length <= Math.max(idIndex, qtyIndex)) continue;
 
+    const rawDate = dateIndex > -1 ? cleanString(values[dateIndex]) : undefined;
+    const normalizedDate = rawDate ? (parseIndDate(rawDate) || rawDate) : undefined;
+
     records.push({
       orderId: orderIdIndex > -1 ? cleanString(values[orderIdIndex]) || undefined : undefined,
       itemId: cleanString(values[idIndex]),
       itemName: nameIndex > -1 ? cleanString(values[nameIndex]) : undefined,
       brandName: brandIndex > -1 ? cleanString(values[brandIndex]) : undefined,
       quantity: parseNum(values[qtyIndex]),
-      revenue: revIndex > -1 ? parseFloat(cleanString(values[revIndex]) || '0') : 0,
-      date: dateIndex > -1 ? cleanString(values[dateIndex]) : undefined,
-      customerCity: cityIndex > -1 ? cleanString(values[cityIndex]) : 'Unknown'
+      revenue: revIndex > -1 ? parseNum(values[revIndex]) : 0,
+      date: normalizedDate,
+      customerName: custNameIndex > -1 ? cleanString(values[custNameIndex]) || undefined : undefined,
+      customerAddress: addressIndex > -1 ? cleanString(values[addressIndex]) || undefined : undefined,
+      customerCity: cityIndex > -1 ? cleanString(values[cityIndex]) || 'Unknown' : 'Unknown',
+      customerState: stateIndex > -1 ? cleanString(values[stateIndex]) || undefined : undefined,
+      supplyCity: supplyCityIndex > -1 ? cleanString(values[supplyCityIndex]) || undefined : undefined,
+      supplyState: supplyStateIndex > -1 ? cleanString(values[supplyStateIndex]) || undefined : undefined,
+      orderStatus: statusIndex > -1 ? cleanString(values[statusIndex]) || undefined : undefined,
+      mrp: optNum(values, mrpIndex),
+      sellingPrice: optNum(values, sellingPriceIndex),
+      igst: optNum(values, igstIndex),
+      cgst: optNum(values, cgstIndex),
+      sgst: optNum(values, sgstIndex),
+      totalTax: optNum(values, totalTaxIndex),
+      commissionCharge: optNum(values, commChargeIndex),
+      shippingCharge: optNum(values, shipChargeIndex),
+      feeGstCharge: optNum(values, feeGstIndex),
+      tcsCharge: optNum(values, tcsIndex),
+      tdsCharge: optNum(values, tdsIndex),
+      otherCharges: optNum(values, otherChargeIndex),
+      receivedAmount: optNum(values, receivedIndex),
     });
   }
 

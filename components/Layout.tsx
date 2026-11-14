@@ -3,7 +3,7 @@ import { ViewMode } from '../types';
 import { 
   LayoutDashboard, Table, BarChart3, Bell, Menu, UploadCloud, 
   Sun, Moon, Megaphone, ChevronLeft, ChevronRight, LogOut,
-  Truck, Calculator, AlertTriangle
+  Truck, Calculator, AlertTriangle, Receipt
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -84,6 +84,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, currentMode, setMode, 
           {/* Navigation */}
           <nav className="p-4 space-y-2 flex-1 overflow-y-auto custom-scrollbar">
             <NavItem mode={ViewMode.DASHBOARD} icon={LayoutDashboard} label="Overview" />
+            <NavItem mode={ViewMode.ORDER_DETAILS} icon={Receipt} label="Order Details" />
             <NavItem mode={ViewMode.INVENTORY_LIST} icon={Table} label="Inventory Data" />
             <NavItem mode={ViewMode.REPLENISHMENT} icon={Truck} label="Replenishment" />
             <NavItem mode={ViewMode.PROFIT_ANALYTICS} icon={Calculator} label="Profit & TACoS" />

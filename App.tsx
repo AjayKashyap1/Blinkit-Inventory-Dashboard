@@ -9,6 +9,7 @@ import { CityDetail } from './components/CityDetail';
 import { ReplenishmentPlanner } from './components/ReplenishmentPlanner';
 import { ProfitAnalytics } from './components/ProfitAnalytics';
 import { ActionAlerts } from './components/ActionAlerts';
+import { OrderWiseDetails } from './components/OrderWiseDetails';
 import { 
   parseInventoryCSV, parseSalesCSV, parseAdsCSV, readFileAsText, readExcelAsCSV, readExcelAdsSheets, extractAdsSheetNames,
   mergeData, computeContentHash, extractDateRange, deduplicateSalesAcrossSheets, deduplicateAdsAcrossSheets
@@ -76,8 +77,22 @@ const App: React.FC = () => {
         const savedSources = await loadSourcesFromStorage();
         if (!mounted) return;
         if (savedSources.length > 0) {
-          setSources(savedSources);
-          if (savedSources.some(s => s.isActive)) {
+          const upgradedSources = savedSources.map(src => {
+            if (src.type === 'SALES' && src.rawContent) {
+              const firstRec = (src.parsedData as SalesRecord[] | undefined)?.[0];
+              if (!firstRec || (firstRec.customerState === undefined && firstRec.orderStatus === undefined)) {
+                try {
+                  const reparsed = parseSalesCSV(src.rawContent);
+                  return { ...src, parsedData: reparsed, rowCount: reparsed.length };
+                } catch {
+                  return src;
+                }
+              }
+            }
+            return src;
+          });
+          setSources(upgradedSources);
+          if (upgradedSources.some(s => s.isActive)) {
             setViewMode(ViewMode.DASHBOARD);
           }
         }
@@ -500,6 +515,17 @@ const App: React.FC = () => {
       {viewMode === ViewMode.INVENTORY_LIST && (
         <InventoryTable 
           data={inventoryWithSalesData} 
+          onSelectProduct={handleSelectProduct}
+        />
+      )}
+
+      {viewMode === ViewMode.ORDER_DETAILS && (
+        <OrderWiseDetails
+          salesData={activeSalesData}
+          inventoryData={activeInventoryData}
+          productCosts={productCosts}
+          globalConfig={globalProfitConfig}
+          onUpdateGlobalConfig={handleUpdateGlobalProfitConfig}
           onSelectProduct={handleSelectProduct}
         />
       )}
