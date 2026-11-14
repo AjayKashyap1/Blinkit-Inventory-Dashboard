@@ -10,7 +10,7 @@ import { ReplenishmentPlanner } from './components/ReplenishmentPlanner';
 import { ProfitAnalytics } from './components/ProfitAnalytics';
 import { ActionAlerts } from './components/ActionAlerts';
 import { 
-  parseInventoryCSV, parseSalesCSV, parseAdsCSV, readFileAsText, readExcelAsCSV, 
+  parseInventoryCSV, parseSalesCSV, parseAdsCSV, readFileAsText, readExcelAsCSV, readExcelAdsSheets, extractAdsSheetNames,
   mergeData, computeContentHash, extractDateRange, deduplicateSalesAcrossSheets, deduplicateAdsAcrossSheets
 } from './utils';
 import { 
@@ -200,7 +200,7 @@ const App: React.FC = () => {
     setViewMode(ViewMode.CITY_DETAIL);
   };
 
-  const processFileContent = (content: string, type: FileType, fileName: string) => {
+  const processFileContent = (content: string, type: FileType, fileName: string, sheetNames?: string[]) => {
     const fileHash = computeContentHash(content);
     if (type !== 'INVENTORY') {
       const duplicate = sources.find(s => s.type === type && (s.fileHash === fileHash || (s.rawContent && computeContentHash(s.rawContent) === fileHash)));
@@ -224,6 +224,9 @@ const App: React.FC = () => {
         ? extractDateRange(records as (SalesRecord | AdvertisementRecord)[])
         : undefined;
 
+    const detectedSheets =
+      sheetNames || (type === 'ADVERTISEMENT' ? extractAdsSheetNames(content) : undefined);
+
     const newSource: DataSource = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       type,
@@ -235,6 +238,7 @@ const App: React.FC = () => {
       parsedData: records,
       dateRange,
       fileHash,
+      sheetNames: detectedSheets,
     };
 
     setSources(prev => {
@@ -251,14 +255,21 @@ const App: React.FC = () => {
   const handleFileUpload = async (file: File, type: FileType) => {
     try {
       let content = '';
+      let sheetNames: string[] | undefined;
       if (file.name.endsWith('.csv')) {
         content = await readFileAsText(file);
       } else if (file.name.match(/\.(xlsx|xls)$/i)) {
-        content = await readExcelAsCSV(file);
+        if (type === 'ADVERTISEMENT') {
+          const adsWorkbook = await readExcelAdsSheets(file);
+          content = adsWorkbook.content;
+          sheetNames = adsWorkbook.sheetNames;
+        } else {
+          content = await readExcelAsCSV(file);
+        }
       } else {
         throw new Error("Unsupported file format. Please upload .csv, .xlsx, or .xls");
       }
-      processFileContent(content, type, file.name);
+      processFileContent(content, type, file.name, sheetNames);
     } catch (error: any) {
       console.error("File processing error:", error);
       throw error; 
@@ -286,10 +297,17 @@ const App: React.FC = () => {
       }
       try {
         let content = '';
+        let sheetNames: string[] | undefined;
         if (file.name.endsWith('.csv')) {
           content = await readFileAsText(file);
         } else if (file.name.match(/\.(xlsx|xls)$/i)) {
-          content = await readExcelAsCSV(file);
+          if (type === 'ADVERTISEMENT') {
+            const adsWorkbook = await readExcelAdsSheets(file);
+            content = adsWorkbook.content;
+            sheetNames = adsWorkbook.sheetNames;
+          } else {
+            content = await readExcelAsCSV(file);
+          }
         } else {
           throw new Error(`Unsupported format for ${file.name}. Use .csv or .xlsx`);
         }
@@ -326,6 +344,7 @@ const App: React.FC = () => {
           parsedData: records,
           dateRange,
           fileHash,
+          sheetNames,
         });
       } catch (err: any) {
         console.error(`Error processing ${file.name}:`, err);
@@ -410,7 +429,12 @@ const App: React.FC = () => {
         } else if (source.type === 'ADVERTISEMENT') {
           records = parseAdsCSV(source.rawContent);
         }
-        return { ...source, rowCount: records.length, parsedData: records };
+        return {
+          ...source,
+          rowCount: records.length,
+          parsedData: records,
+          sheetNames: source.sheetNames || (source.type === 'ADVERTISEMENT' ? extractAdsSheetNames(source.rawContent) : undefined),
+        };
       }));
     } catch (e) {
       console.error("Refresh failed", e);

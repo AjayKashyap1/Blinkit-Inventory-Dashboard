@@ -56,6 +56,7 @@ export interface AdvertisementRecord {
   directUnits: number;
   indirectUnits: number;
   ctr?: number; // Calculated if not present
+  adType?: string; // e.g. PRODUCT_LISTING, PRODUCT_RECOMMENDATION, BANNER_LISTING
 }
 
 export interface MergedItem {
@@ -94,6 +95,7 @@ export interface DataSource {
   parsedData?: (InventoryRecord | SalesRecord | AdvertisementRecord)[];
   dateRange?: { start: string; end: string };
   fileHash?: string;
+  sheetNames?: string[];
 }
 
 export interface ProductCostConfig {

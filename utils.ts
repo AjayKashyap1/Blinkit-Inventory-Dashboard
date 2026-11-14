@@ -32,6 +32,47 @@ export const readExcelAsCSV = (file: File): Promise<string> => {
   });
 };
 
+// Helper to read all sheets from an Ads Excel file into a serialized multi-sheet CSV string
+export const ADS_SHEET_MARKER = '###BLINKIT_SHEET:';
+
+export const readExcelAdsSheets = (file: File): Promise<{ content: string; sheetNames: string[] }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+        const sections: string[] = [];
+        const includedSheets: string[] = [];
+
+        for (const sheetName of workbook.SheetNames) {
+          const worksheet = workbook.Sheets[sheetName];
+          if (!worksheet) continue;
+          const csv = XLSX.utils.sheet_to_csv(worksheet, { dateNF: 'yyyy-mm-dd' });
+          if (csv && csv.trim().length > 0) {
+            sections.push(`${ADS_SHEET_MARKER}${sheetName}###\n${csv.trim()}`);
+            includedSheets.push(sheetName);
+          }
+        }
+
+        if (sections.length === 0) {
+          reject(new Error('Excel file contains no readable sheets.'));
+          return;
+        }
+
+        resolve({
+          content: sections.join('\n'),
+          sheetNames: includedSheets,
+        });
+      } catch {
+        reject(new Error('Failed to parse Excel file. Ensure it is not password protected.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsArrayBuffer(file);
+  });
+};
+
 const cleanString = (val: string) => val ? val.replace(/^"|"$/g, '').replace(/""/g, '"').trim() : '';
 const parseNum = (val: string) => {
   if (!val) return 0;
@@ -40,16 +81,40 @@ const parseNum = (val: string) => {
   return isNaN(num) ? 0 : num;
 };
 
-// Helper to parse DD-MM-YYYY to YYYY-MM-DD
+// Helper to normalize DD-MM-YYYY / YYYY-MM-DD / DD/MM/YYYY to YYYY-MM-DD
 const parseIndDate = (dateStr: string): string | null => {
   if (!dateStr) return null;
-  // Handle DD-MM-YYYY
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  const trimmed = dateStr.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'total') return null;
+
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
   }
-  // Fallback for YYYY-MM-DD or MM/DD/YYYY if mixed
-  const d = new Date(dateStr);
+
+  // Handle DD-MM-YYYY or D-M-YYYY
+  const dashParts = trimmed.split('-');
+  if (dashParts.length === 3) {
+    if (dashParts[0].length === 4) {
+      return `${dashParts[0]}-${dashParts[1].padStart(2, '0')}-${dashParts[2].padStart(2, '0')}`;
+    }
+    if (dashParts[2].length === 4) {
+      return `${dashParts[2]}-${dashParts[1].padStart(2, '0')}-${dashParts[0].padStart(2, '0')}`;
+    }
+  }
+
+  // Handle DD/MM/YYYY or YYYY/MM/DD
+  const slashParts = trimmed.split('/');
+  if (slashParts.length === 3) {
+    if (slashParts[0].length === 4) {
+      return `${slashParts[0]}-${slashParts[1].padStart(2, '0')}-${slashParts[2].padStart(2, '0')}`;
+    }
+    if (slashParts[2].length === 4) {
+      return `${slashParts[2]}-${slashParts[1].padStart(2, '0')}-${slashParts[0].padStart(2, '0')}`;
+    }
+  }
+
+  const d = new Date(trimmed);
   if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
   return null;
 };
@@ -158,74 +223,170 @@ export const parseSalesCSV = (csvContent: string): SalesRecord[] => {
   return records;
 };
 
-export const parseAdsCSV = (csvContent: string): AdvertisementRecord[] => {
+const parseSingleAdsSheetCSV = (csvContent: string, sheetLabel?: string): AdvertisementRecord[] => {
   const lines = csvContent.trim().split('\n');
   const records: AdvertisementRecord[] = [];
 
-  // Assuming standard Blinkit Ads Report format based on user input
-  // Header usually: Date,Campaign ID,Campaign Name,Targeting Type,Targeting Value,...
   let headerIndex = -1;
-  const requiredCols = ['date', 'campaign name', 'impressions', 'estimated budget consumed'];
-
-  for(let i=0; i<Math.min(lines.length, 20); i++) {
-     const lineLower = lines[i].toLowerCase();
-     if(requiredCols.every(col => lineLower.includes(col))) {
-        headerIndex = i;
-        break;
-     }
+  for (let i = 0; i < Math.min(lines.length, 25); i++) {
+    const lineLower = lines[i].toLowerCase();
+    const hasDate = lineLower.includes('date');
+    const hasCampaign = lineLower.includes('campaign name') || lineLower.includes('campaign id') || lineLower.includes('campaign');
+    const hasMetric =
+      lineLower.includes('impressions') ||
+      lineLower.includes('estimated budget consumed') ||
+      lineLower.includes('budget consumed') ||
+      lineLower.includes('spend');
+    if (hasDate && hasCampaign && hasMetric) {
+      headerIndex = i;
+      break;
+    }
   }
 
   if (headerIndex === -1) {
-    throw new Error("Invalid Ads Report: Missing required columns (Date, Campaign Name, Impressions, Spend).");
+    throw new Error('Invalid Ads Report: Missing required columns (Date, Campaign Name, Impressions/Spend).');
   }
 
-  const headers = lines[headerIndex].toLowerCase().split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.trim().replace(/"/g, ''));
-  
-  // Map columns
-  const mapIdx = (name: string) => headers.findIndex(h => h.includes(name));
-  
-  const idxDate = mapIdx('date');
-  const idxCmpId = mapIdx('campaign id');
-  const idxCmpName = mapIdx('campaign name');
-  const idxTargetType = mapIdx('targeting type');
-  const idxTargetVal = mapIdx('targeting value');
-  const idxMatchType = mapIdx('match type');
-  const idxImp = mapIdx('impressions');
-  const idxCpm = mapIdx('cpm');
-  const idxSpend = mapIdx('estimated budget consumed'); // or 'spend'
-  const idxDirSales = mapIdx('direct sales');
-  const idxIndSales = mapIdx('indirect sales');
-  const idxDirRoas = mapIdx('direct roas');
-  const idxTotRoas = mapIdx('total roas');
-  const idxDirUnits = mapIdx('direct quantities sold');
-  const idxIndUnits = mapIdx('indirect quantities sold');
+  const headers = lines[headerIndex]
+    .toLowerCase()
+    .split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)
+    .map(h => h.trim().replace(/"/g, ''));
+
+  const findCol = (...candidates: string[]) => {
+    for (const c of candidates) {
+      const idx = headers.findIndex(h => h === c || h.includes(c));
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  };
+
+  const idxDate = findCol('date');
+  const idxCmpId = findCol('campaign id', 'campaign_id');
+  const idxCmpName = findCol('campaign name', 'campaign_name', 'campaign');
+  const idxTargetType = findCol('targeting type', 'targeting_type', 'placement', 'slot', 'ad type', 'ad format');
+  const idxTargetVal = findCol('targeting value', 'targeting_value', 'keyword', 'product name', 'item name', 'banner name');
+  const idxMatchType = findCol('match type', 'match_type');
+  const idxImp = findCol('impressions', 'impr');
+  const idxCpm = findCol('cpm');
+  const idxCtr = findCol('ctr');
+  const idxSpend = findCol('estimated budget consumed', 'budget consumed', 'ad spend', 'total spend', 'spend', 'cost');
+  const idxDirSales = findCol('direct sales');
+  const idxIndSales = findCol('indirect sales');
+  const idxTotalSales = findCol('total sales', 'attributed sales', 'sales', 'revenue');
+  const idxDirRoas = findCol('direct roas');
+  const idxTotRoas = findCol('total roas', 'roas');
+  const idxDirUnits = findCol('direct quantities sold', 'direct units', 'direct orders');
+  const idxIndUnits = findCol('indirect quantities sold', 'indirect units', 'indirect orders');
+  const idxTotalUnits = findCol('quantities sold', 'total units', 'units sold', 'total orders', 'orders');
+
+  const normalizedAdType = sheetLabel ? sheetLabel.trim() : undefined;
 
   for (let i = headerIndex + 1; i < lines.length; i++) {
     const line = lines[i];
+    if (!line || !line.trim()) continue;
     const values = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-    
-    if (values.length < 5) continue;
+    if (values.length < 3) continue;
+
+    const rawDate = idxDate > -1 ? cleanString(values[idxDate]) : '';
+    const parsedDate = parseIndDate(rawDate);
+    if (!parsedDate) continue; // Skip blank/summary/Total rows
+
+    const campaignId = idxCmpId > -1 ? cleanString(values[idxCmpId]) : '';
+    const campaignName = idxCmpName > -1 ? cleanString(values[idxCmpName]) : '';
+    if (!campaignName && !campaignId) continue;
+
+    const impressions = idxImp > -1 ? parseNum(values[idxImp]) : 0;
+    const spend = idxSpend > -1 ? parseNum(values[idxSpend]) : 0;
+    const directSales =
+      idxDirSales > -1
+        ? parseNum(values[idxDirSales])
+        : idxIndSales === -1 && idxTotalSales > -1
+          ? parseNum(values[idxTotalSales])
+          : 0;
+    const indirectSales = idxIndSales > -1 ? parseNum(values[idxIndSales]) : 0;
+    const directUnits =
+      idxDirUnits > -1
+        ? parseNum(values[idxDirUnits])
+        : idxIndUnits === -1 && idxTotalUnits > -1
+          ? parseNum(values[idxTotalUnits])
+          : 0;
+    const indirectUnits = idxIndUnits > -1 ? parseNum(values[idxIndUnits]) : 0;
+
+    const cpm = idxCpm > -1 ? parseNum(values[idxCpm]) : (impressions > 0 ? (spend / impressions) * 1000 : 0);
+    const directRoas = idxDirRoas > -1 ? parseNum(values[idxDirRoas]) : (spend > 0 ? directSales / spend : 0);
+    const totalRoas = idxTotRoas > -1 ? parseNum(values[idxTotRoas]) : (spend > 0 ? (directSales + indirectSales) / spend : 0);
+    const ctr = idxCtr > -1 ? parseNum(values[idxCtr]) : undefined;
 
     records.push({
-      date: parseIndDate(cleanString(values[idxDate])) || '',
-      campaignId: cleanString(values[idxCmpId]),
-      campaignName: cleanString(values[idxCmpName]),
-      targetingType: idxTargetType > -1 ? cleanString(values[idxTargetType]) : '',
+      date: parsedDate,
+      campaignId,
+      campaignName: campaignName || `Campaign ${campaignId}`,
+      targetingType: idxTargetType > -1 ? cleanString(values[idxTargetType]) : (normalizedAdType || ''),
       targetingValue: idxTargetVal > -1 ? cleanString(values[idxTargetVal]) : '',
       matchType: idxMatchType > -1 ? cleanString(values[idxMatchType]) : '',
-      impressions: parseNum(values[idxImp]),
-      cpm: parseNum(values[idxCpm]),
-      spend: parseNum(values[idxSpend]),
-      directSales: parseNum(values[idxDirSales]),
-      indirectSales: parseNum(values[idxIndSales]),
-      directRoas: parseNum(values[idxDirRoas]),
-      totalRoas: parseNum(values[idxTotRoas]),
-      directUnits: parseNum(values[idxDirUnits]),
-      indirectUnits: parseNum(values[idxIndUnits]),
+      impressions,
+      cpm,
+      spend,
+      directSales,
+      indirectSales,
+      directRoas,
+      totalRoas,
+      directUnits,
+      indirectUnits,
+      ctr,
+      adType: normalizedAdType,
     });
   }
 
   return records;
+};
+
+export const extractAdsSheetNames = (rawContent: string): string[] | undefined => {
+  if (!rawContent.includes(ADS_SHEET_MARKER)) return undefined;
+  const matches = Array.from(rawContent.matchAll(/^###BLINKIT_SHEET:(.+?)###$/gm));
+  return matches.length > 0 ? matches.map(m => m[1].trim()) : undefined;
+};
+
+export const parseAdsCSV = (csvContent: string): AdvertisementRecord[] => {
+  if (csvContent.includes(ADS_SHEET_MARKER)) {
+    const lines = csvContent.split('\n');
+    const sheetChunks: { name: string; lines: string[] }[] = [];
+    let currentChunk: { name: string; lines: string[] } | null = null;
+
+    for (const line of lines) {
+      const markerMatch = line.trim().match(/^###BLINKIT_SHEET:(.+?)###$/);
+      if (markerMatch) {
+        if (currentChunk) sheetChunks.push(currentChunk);
+        currentChunk = { name: markerMatch[1].trim(), lines: [] };
+      } else if (currentChunk) {
+        currentChunk.lines.push(line);
+      }
+    }
+    if (currentChunk) sheetChunks.push(currentChunk);
+
+    const allRecords: AdvertisementRecord[] = [];
+    let validSheetCount = 0;
+
+    for (const chunk of sheetChunks) {
+      const chunkCsv = chunk.lines.join('\n').trim();
+      if (!chunkCsv) continue;
+      try {
+        const parsed = parseSingleAdsSheetCSV(chunkCsv, chunk.name);
+        validSheetCount++;
+        allRecords.push(...parsed);
+      } catch {
+        // Skip non-ads or empty metadata sheets inside the workbook
+      }
+    }
+
+    if (validSheetCount === 0) {
+      throw new Error('Invalid Ads Workbook: Could not find valid Ads columns in any sheet (PRODUCT_LISTING, PRODUCT_RECOMMENDATION, BANNER_LISTING).');
+    }
+
+    return allRecords;
+  }
+
+  return parseSingleAdsSheetCSV(csvContent);
 };
 
 export const mergeData = (inventory: InventoryRecord[], sales: SalesRecord[]): MergedItem[] => {
@@ -531,7 +692,7 @@ export const deduplicateAdsAcrossSheets = (
 
   for (const sheetRows of sheetRecordLists) {
     for (const row of sheetRows) {
-      const key = `${row.date}__${row.campaignId}__${row.targetingType}__${row.targetingValue}__${row.matchType}__${row.spend}__${row.impressions}`;
+      const key = `${row.adType || ''}__${row.date}__${row.campaignId}__${row.campaignName}__${row.targetingType}__${row.targetingValue}__${row.matchType}__${row.spend}__${row.impressions}`;
       if (seenKeys.has(key)) {
         removedCount++;
         continue;

@@ -359,6 +359,18 @@ export const DataImport: React.FC<DataImportProps> = ({
                       </span>
                     )}
                   </div>
+                  {file.sheetNames && file.sheetNames.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {file.sheetNames.map(sheet => (
+                        <span
+                          key={sheet}
+                          className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-100 dark:border-purple-800/50"
+                        >
+                          {sheet}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-1 shrink-0">
                    <button 
@@ -530,7 +542,7 @@ export const DataImport: React.FC<DataImportProps> = ({
         <UploadCard 
           type="ADVERTISEMENT" 
           title="Ads Reports" 
-          description="Blinkit Advertising Campaign Reports. Select multiple files at once!"
+          description="Imports all Excel tabs (Product Listing, Recommendation & Banner Listing). Multiple files supported!"
           allowedExts="Multiple CSV / Excel"
           multiple={true}
           icon={Megaphone}

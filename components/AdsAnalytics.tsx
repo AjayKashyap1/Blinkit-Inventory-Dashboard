@@ -21,6 +21,7 @@ type ChartType = 'mixed' | 'bar' | 'line';
 type TimePeriod = 'daily' | 'weekly' | 'monthly';
 
 export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
+  const [filterAdType, setFilterAdType] = useState('All');
   const [filterCampaign, setFilterCampaign] = useState('All');
   const [selectedCampaignName, setSelectedCampaignName] = useState<string | null>(null);
   const [chartType, setChartType] = useState<ChartType>('mixed');
@@ -41,16 +42,67 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const campaigns = useMemo(() => Array.from(new Set(data.map(d => d.campaignName))).sort(), [data]);
+  const adTypes = useMemo(() => {
+    const order = ['PRODUCT_LISTING', 'PRODUCT_RECOMMENDATION', 'BANNER_LISTING'];
+    const found: string[] = Array.from(
+      new Set<string>(data.map(d => d.adType).filter((v): v is string => Boolean(v)))
+    );
+    return found.sort((a, b) => {
+      const ia = order.indexOf(a);
+      const ib = order.indexOf(b);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return 1;
+      return a.localeCompare(b);
+    });
+  }, [data]);
 
-  // Determine which data to use (Global or Specific Campaign)
+  // Format / Sheet Breakdown across PRODUCT_LISTING, PRODUCT_RECOMMENDATION, BANNER_LISTING
+  const adTypeBreakdown = useMemo(() => {
+    const map = new Map<string, { adType: string; spend: number; sales: number; impressions: number; orders: number; campaigns: Set<string> }>();
+    data.forEach(d => {
+      const key = d.adType || 'GENERAL';
+      if (!map.has(key)) {
+        map.set(key, { adType: key, spend: 0, sales: 0, impressions: 0, orders: 0, campaigns: new Set() });
+      }
+      const entry = map.get(key)!;
+      entry.spend += d.spend;
+      entry.sales += d.directSales + d.indirectSales;
+      entry.impressions += d.impressions;
+      entry.orders += d.directUnits + d.indirectUnits;
+      if (d.campaignName) entry.campaigns.add(d.campaignName);
+    });
+    const order = ['PRODUCT_LISTING', 'PRODUCT_RECOMMENDATION', 'BANNER_LISTING'];
+    return Array.from(map.values())
+      .map(item => ({
+        ...item,
+        campaignCount: item.campaigns.size,
+        roas: item.spend > 0 ? item.sales / item.spend : 0,
+      }))
+      .sort((a, b) => {
+        const ia = order.indexOf(a.adType);
+        const ib = order.indexOf(b.adType);
+        if (ia !== -1 && ib !== -1) return ia - ib;
+        if (ia !== -1) return -1;
+        if (ib !== -1) return 1;
+        return b.spend - a.spend;
+      });
+  }, [data]);
+
+  const campaigns = useMemo(() => {
+    const scoped = filterAdType === 'All' ? data : data.filter(d => (d.adType || 'GENERAL') === filterAdType);
+    return Array.from(new Set(scoped.map(d => d.campaignName))).sort();
+  }, [data, filterAdType]);
+
+  // Determine which data to use (Ad Type + Global or Specific Campaign)
   const activeData = useMemo(() => {
+    const byType = filterAdType === 'All' ? data : data.filter(d => (d.adType || 'GENERAL') === filterAdType);
     if (selectedCampaignName) {
-      return data.filter(d => d.campaignName === selectedCampaignName);
+      return byType.filter(d => d.campaignName === selectedCampaignName);
     }
-    if (filterCampaign === 'All') return data;
-    return data.filter(d => d.campaignName === filterCampaign);
-  }, [data, filterCampaign, selectedCampaignName]);
+    if (filterCampaign === 'All') return byType;
+    return byType.filter(d => d.campaignName === filterCampaign);
+  }, [data, filterAdType, filterCampaign, selectedCampaignName]);
 
   const { daily, weekly, monthly, totals } = useMemo(() => aggregateAdsData(activeData), [activeData]);
 
@@ -69,6 +121,7 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
   const campaignStats = useMemo(() => {
     const statsMap = new Map<string, { 
       name: string; 
+      adTypes: Set<string>;
       spend: number; 
       sales: number; 
       impressions: number; 
@@ -78,9 +131,10 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
 
     activeData.forEach(d => {
       if (!statsMap.has(d.campaignName)) {
-        statsMap.set(d.campaignName, { name: d.campaignName, spend: 0, sales: 0, impressions: 0, orders: 0, roas: 0 });
+        statsMap.set(d.campaignName, { name: d.campaignName, adTypes: new Set(), spend: 0, sales: 0, impressions: 0, orders: 0, roas: 0 });
       }
       const entry = statsMap.get(d.campaignName)!;
+      if (d.adType) entry.adTypes.add(d.adType);
       entry.spend += d.spend;
       entry.sales += (d.directSales + d.indirectSales);
       entry.impressions += d.impressions;
@@ -88,7 +142,12 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
     });
 
     return Array.from(statsMap.values()).map(s => ({
-      ...s,
+      name: s.name,
+      adTypeLabel: Array.from(s.adTypes).join(', ') || 'General',
+      spend: s.spend,
+      sales: s.sales,
+      impressions: s.impressions,
+      orders: s.orders,
       roas: s.spend > 0 ? s.sales / s.spend : 0
     })).sort((a, b) => b.spend - a.spend);
   }, [activeData]);
@@ -108,11 +167,13 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
     }>();
 
     activeData.forEach(d => {
-      const key = `${d.targetingValue}-${d.targetingType}`; // Unique key
+      const targetName = d.targetingValue || d.adType || '(Direct / Auto)';
+      const targetType = d.targetingType || d.adType || 'General';
+      const key = `${targetName}-${targetType}`;
       if (!statsMap.has(key)) {
         statsMap.set(key, { 
-            target: d.targetingValue || '(No Target)', 
-            type: d.targetingType, 
+            target: targetName, 
+            type: targetType, 
             spend: 0, 
             sales: 0, 
             impressions: 0, 
@@ -148,7 +209,7 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
 
     const headers = selectedCampaignName 
         ? ['Target Value', 'Target Type', 'Spend', 'Revenue', 'ROAS', 'Impressions', 'Orders']
-        : ['Campaign Name', 'Spend', 'Revenue', 'ROAS', 'Impressions', 'Orders'];
+        : ['Campaign Name', 'Ad Type', 'Spend', 'Revenue', 'ROAS', 'Impressions', 'Orders'];
 
     const rows = dataToExport.map(row => {
         if(selectedCampaignName) {
@@ -156,7 +217,7 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
             return [`"${r.target}"`, r.type, r.spend, r.sales, r.roas.toFixed(2), r.impressions, r.orders];
         } else {
             const r = row as typeof campaignStats[0];
-            return [`"${r.name}"`, r.spend, r.sales, r.roas.toFixed(2), r.impressions, r.orders];
+            return [`"${r.name}"`, `"${r.adTypeLabel}"`, r.spend, r.sales, r.roas.toFixed(2), r.impressions, r.orders];
         }
     });
 
@@ -233,7 +294,7 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
     // 3. Generate Table
     const headers = selectedCampaignName 
         ? [['Target', 'Type', 'Spend', 'Revenue', 'ROAS', 'Orders']]
-        : [['Campaign Name', 'Spend', 'Revenue', 'ROAS', 'Imp', 'Orders']];
+        : [['Campaign Name', 'Ad Sheet', 'Spend', 'Revenue', 'ROAS', 'Imp', 'Orders']];
 
     const dataToExport = selectedCampaignName ? targetingStats : campaignStats;
     const rows = dataToExport.map(row => {
@@ -242,7 +303,7 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
             return [r.target, r.type, Math.round(r.spend), Math.round(r.sales), r.roas.toFixed(2), r.orders];
          } else {
             const r = row as typeof campaignStats[0];
-            return [r.name, Math.round(r.spend), Math.round(r.sales), r.roas.toFixed(2), r.impressions, r.orders];
+            return [r.name, r.adTypeLabel, Math.round(r.spend), Math.round(r.sales), r.roas.toFixed(2), r.impressions, r.orders];
          }
     });
 
@@ -321,7 +382,26 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Ad Format / Sheet Filter */}
+          {adTypes.length > 0 && (
+            <div className="relative">
+              <Layers className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-purple-500" />
+              <select
+                className="pl-9 pr-4 py-2 bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg text-sm outline-none focus:ring-2 focus:ring-purple-500 text-gray-700 dark:text-white font-medium"
+                value={filterAdType}
+                onChange={(e) => {
+                  setFilterAdType(e.target.value);
+                  setFilterCampaign('All');
+                  setSelectedCampaignName(null);
+                }}
+              >
+                <option value="All">All Ad Sheets ({adTypes.length})</option>
+                {adTypes.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          )}
+
           {/* Campaign Filter (Only visible if not drilled down) */}
           {!selectedCampaignName && (
             <div className="relative">
@@ -423,6 +503,52 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
            </div>
         </div>
       </div>
+
+      {/* Ad Sheet / Format Breakdown Strip */}
+      {adTypeBreakdown.length > 1 && !selectedCampaignName && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {adTypeBreakdown.map(fmt => {
+            const isSelected = filterAdType === fmt.adType;
+            return (
+              <button
+                key={fmt.adType}
+                onClick={() => {
+                  setFilterAdType(isSelected ? 'All' : fmt.adType);
+                  setFilterCampaign('All');
+                }}
+                className={`text-left p-4 rounded-xl border transition-all ${
+                  isSelected
+                    ? 'bg-purple-50/80 dark:bg-purple-900/30 border-purple-400 ring-2 ring-purple-300 dark:ring-purple-700 shadow-sm'
+                    : 'bg-white dark:bg-slate-800 border-gray-100 dark:border-slate-700 hover:border-purple-200 dark:hover:border-purple-800 shadow-sm'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-purple-700 dark:text-purple-300 tracking-wide">
+                    {fmt.adType}
+                  </span>
+                  <span className="text-[11px] font-semibold text-gray-400">
+                    {fmt.campaignCount} campaigns
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
+                  <div>
+                    <p className="text-[10px] text-gray-400">Spend</p>
+                    <p className="font-bold text-red-600 dark:text-red-400">{formatCurrency(fmt.spend)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-400">Ad Sales</p>
+                    <p className="font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(fmt.sales)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-400">ROAS</p>
+                    <p className="font-bold text-gray-800 dark:text-white">{fmt.roas.toFixed(2)}x</p>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Main Chart */}
       <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-gray-100 dark:border-slate-700 shadow-sm" ref={chartRef}>
@@ -545,7 +671,7 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
                <thead className="bg-gray-50 dark:bg-slate-700 text-gray-600 dark:text-gray-300 font-medium">
                   <tr>
                      <th className="px-6 py-3">{selectedCampaignName ? "Targeting Value" : "Campaign Name"}</th>
-                     {selectedCampaignName && <th className="px-6 py-3">Type</th>}
+                     <th className="px-6 py-3">{selectedCampaignName ? "Type" : "Ad Sheet"}</th>
                      <th className="px-6 py-3 text-right">Spend</th>
                      <th className="px-6 py-3 text-right">Revenue</th>
                      <th className="px-6 py-3 text-right">ROAS</th>
@@ -587,6 +713,11 @@ export const AdsAnalytics: React.FC<AdsAnalyticsProps> = ({ data }) => {
                         >
                             <td className="px-6 py-4 font-medium text-gray-800 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400">
                                 {camp.name}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className="px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-[11px] font-semibold">
+                                {camp.adTypeLabel}
+                              </span>
                             </td>
                             <td className="px-6 py-4 text-right text-red-600 dark:text-red-400">{formatCurrency(camp.spend)}</td>
                             <td className="px-6 py-4 text-right text-green-600 dark:text-green-400">{formatCurrency(camp.sales)}</td>
