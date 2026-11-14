@@ -103,11 +103,17 @@ export interface ProductCostConfig {
   shippingFee?: number; // Optional SKU override INR
 }
 
+export type CostTier = 'T1' | 'T2' | 'T3' | 'T4';
+
 export interface GlobalProfitConfig {
   defaultCogsPct: number; // Fallback % of ASP if SKU COGS not provided (e.g. 55%)
   defaultCommissionPct: number; // Blinkit commission % (e.g. 15%)
   defaultShippingPerUnit: number; // Avg handling/shipping fee per unit INR (e.g. 25)
   gstOnFeesPct: number; // GST % on commission/fees (e.g. 18%)
+  activeCostTier?: CostTier; // Tier cost used in P&L calculation (default T1)
+  t2DiscountPct?: number; // T2 = T1 - 10%
+  t3DiscountPct?: number; // T3 = T2 - 5%
+  t4DiscountPct?: number; // T4 = T3 - 5%
 }
 
 export type FileType = 'INVENTORY' | 'SALES' | 'ADVERTISEMENT';

@@ -5,10 +5,11 @@ import {
   AdvertisementRecord,
   ProductCostConfig,
   GlobalProfitConfig,
+  CostTier,
 } from '../types';
 import {
   IndianRupee, TrendingUp, TrendingDown, Upload, Download, Search,
-  Percent, Calculator, AlertCircle, Check, FileSpreadsheet, Megaphone, Sliders
+  Percent, Calculator, AlertCircle, Check, FileSpreadsheet, Megaphone, Sliders, Layers
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { readFileAsText, readExcelAsCSV } from '../utils';
@@ -80,6 +81,11 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
     [filteredAds]
   );
 
+  const activeTier: CostTier = globalConfig.activeCostTier || 'T1';
+  const t2Disc = globalConfig.t2DiscountPct ?? 10;
+  const t3Disc = globalConfig.t3DiscountPct ?? 5;
+  const t4Disc = globalConfig.t4DiscountPct ?? 5;
+
   // Aggregate SKU-level revenue, units, and profit metrics
   const skuProfitRows = useMemo(() => {
     const map = new Map<string, {
@@ -109,11 +115,22 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
     return Array.from(map.values()).map(item => {
       const asp = item.unitsSold > 0 ? item.grossRevenue / item.unitsSold : 0;
       const customCost = productCosts[item.itemId];
-      const hasCustomCogs = customCost && customCost.costPrice > 0;
+      const hasCustomCogs = Boolean(customCost && customCost.costPrice > 0);
 
-      const unitCogs = hasCustomCogs
+      // Base Product Cost is Tier 1 (T1)
+      const t1Cost = hasCustomCogs
         ? customCost.costPrice
         : asp * (globalConfig.defaultCogsPct / 100);
+      const t2Cost = Math.max(0, t1Cost * (1 - t2Disc / 100));
+      const t3Cost = Math.max(0, t2Cost * (1 - t3Disc / 100));
+      const t4Cost = Math.max(0, t3Cost * (1 - t4Disc / 100));
+
+      const unitCogs =
+        activeTier === 'T2' ? t2Cost :
+        activeTier === 'T3' ? t3Cost :
+        activeTier === 'T4' ? t4Cost :
+        t1Cost;
+
       const totalCogs = unitCogs * item.unitsSold;
 
       const commPct = customCost?.commissionPct ?? globalConfig.defaultCommissionPct;
@@ -138,6 +155,10 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
       return {
         ...item,
         asp,
+        t1Cost,
+        t2Cost,
+        t3Cost,
+        t4Cost,
         unitCogs,
         hasCustomCogs,
         totalCogs,
@@ -150,7 +171,7 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
         status,
       };
     });
-  }, [filteredSales, invLookup, productCosts, globalConfig, totalAdSpend]);
+  }, [filteredSales, invLookup, productCosts, globalConfig, totalAdSpend, activeTier, t2Disc, t3Disc, t4Disc]);
 
   // Overall P&L KPIs
   const pnlTotals = useMemo(() => {
@@ -212,11 +233,23 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
 
   const handleDownloadTemplate = () => {
     const rows = [
-      ['Item Id', 'Product Name', 'Cost Price (COGS)', 'Commission % (Optional)', 'Shipping Fee INR (Optional)'],
+      [
+        'Item Id',
+        'Product Name',
+        'Tier 1 Cost Price (COGS)',
+        `Tier 2 Cost (-${t2Disc}%)`,
+        `Tier 3 Cost (-${t3Disc}%)`,
+        `Tier 4 Cost (-${t4Disc}%)`,
+        'Commission % (Optional)',
+        'Shipping Fee INR (Optional)',
+      ],
       ...skuProfitRows.map(r => [
         r.itemId,
         `"${r.itemName.replace(/"/g, '""')}"`,
-        r.hasCustomCogs ? r.unitCogs.toFixed(2) : '',
+        r.hasCustomCogs ? r.t1Cost.toFixed(2) : '',
+        r.hasCustomCogs ? r.t2Cost.toFixed(2) : '',
+        r.hasCustomCogs ? r.t3Cost.toFixed(2) : '',
+        r.hasCustomCogs ? r.t4Cost.toFixed(2) : '',
         productCosts[r.itemId]?.commissionPct ?? '',
         productCosts[r.itemId]?.shippingFee ?? '',
       ]),
@@ -247,12 +280,16 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
 
       const headers = lines[0].toLowerCase().split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/"/g, '').trim());
       const idIdx = headers.findIndex(h => h.includes('item id') || h.includes('sku'));
-      const costIdx = headers.findIndex(h => h.includes('cost') || h.includes('cogs') || h.includes('landing'));
+      const costIdx = (() => {
+        const t1Idx = headers.findIndex(h => h.includes('tier 1') || h.includes('t1') || h.includes('cogs') || h.includes('cost price'));
+        if (t1Idx !== -1) return t1Idx;
+        return headers.findIndex(h => (h.includes('cost') && !h.includes('tier 2') && !h.includes('tier 3') && !h.includes('tier 4')) || h.includes('landing'));
+      })();
       const commIdx = headers.findIndex(h => h.includes('commission'));
       const shipIdx = headers.findIndex(h => h.includes('shipping') || h.includes('handling'));
 
       if (idIdx === -1 || costIdx === -1) {
-        throw new Error('Missing required columns: "Item Id" and "Cost Price (COGS)"');
+        throw new Error('Missing required columns: "Item Id" and "Tier 1 Cost Price (COGS)"');
       }
 
       const next = { ...productCosts };
@@ -276,7 +313,7 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
       }
 
       onUpdateProductCosts(next);
-      setImportNotice(`Updated COGS for ${updated} SKUs and saved locally!`);
+      setImportNotice(`Updated Tier 1 COGS for ${updated} SKUs and saved locally!`);
       setTimeout(() => setImportNotice(null), 5000);
     } catch (err: any) {
       setImportNotice(`Error: ${err.message || 'Failed to parse COGS file'}`);
@@ -294,8 +331,13 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
       'Units Sold': r.unitsSold,
       'ASP (INR)': Number(r.asp.toFixed(2)),
       'Gross Revenue (INR)': Number(r.grossRevenue.toFixed(2)),
-      'Unit COGS (INR)': Number(r.unitCogs.toFixed(2)),
-      'COGS Source': r.hasCustomCogs ? 'Custom SKU Cost' : `Default (${globalConfig.defaultCogsPct}%)`,
+      'Tier 1 Cost (INR)': Number(r.t1Cost.toFixed(2)),
+      [`Tier 2 Cost (-${t2Disc}%) (INR)`]: Number(r.t2Cost.toFixed(2)),
+      [`Tier 3 Cost (-${t3Disc}%) (INR)`]: Number(r.t3Cost.toFixed(2)),
+      [`Tier 4 Cost (-${t4Disc}%) (INR)`]: Number(r.t4Cost.toFixed(2)),
+      'Active Cost Tier': activeTier,
+      'Applied Unit COGS (INR)': Number(r.unitCogs.toFixed(2)),
+      'COGS Source': r.hasCustomCogs ? 'Custom Tier 1 Cost' : `Default (${globalConfig.defaultCogsPct}%)`,
       'Total COGS (INR)': Number(r.totalCogs.toFixed(2)),
       'Platform & Shipping Fees (INR)': Number(r.totalPlatformFees.toFixed(2)),
       'Allocated Ad Spend (INR)': Number(r.allocatedAdSpend.toFixed(2)),
@@ -398,10 +440,10 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
         </div>
 
         <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-gray-100 dark:border-slate-700 shadow-sm">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Estimated COGS</p>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Estimated COGS ({activeTier})</p>
           <p className="text-xl font-extrabold text-slate-700 dark:text-slate-200 mt-1">{formatCurrency(pnlTotals.totalCogs)}</p>
           <p className="text-[11px] text-gray-400 mt-1">
-            {pnlTotals.customCostCount}/{skuProfitRows.length} SKUs custom priced
+            {pnlTotals.customCostCount}/{skuProfitRows.length} SKUs Tier 1 priced
           </p>
         </div>
 
@@ -449,11 +491,11 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
 
       {/* Global Assumptions & Date Filter */}
       {showSettings && (
-        <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-slate-700 shadow-sm">
+        <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-slate-700 shadow-sm space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <div>
               <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
-                Fallback COGS (% of ASP)
+                Fallback T1 COGS (% of ASP)
               </label>
               <input
                 type="number"
@@ -525,6 +567,81 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
               />
             </div>
           </div>
+
+          {/* Tier Pricing Calculation Rules */}
+          <div className="pt-3 border-t border-gray-100 dark:border-slate-700 flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+            <div className="grid grid-cols-3 gap-3 flex-1 max-w-lg">
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                  T2 Drop (% off T1)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  step={0.5}
+                  value={t2Disc}
+                  onChange={(e) => onUpdateGlobalConfig({ ...globalConfig, t2DiscountPct: Math.max(0, Number(e.target.value) || 0) })}
+                  className="w-full p-2 text-xs border border-gray-200 dark:border-slate-600 rounded-lg bg-gray-50 dark:bg-slate-700 text-gray-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                  T3 Drop (% off T2)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  step={0.5}
+                  value={t3Disc}
+                  onChange={(e) => onUpdateGlobalConfig({ ...globalConfig, t3DiscountPct: Math.max(0, Number(e.target.value) || 0) })}
+                  className="w-full p-2 text-xs border border-gray-200 dark:border-slate-600 rounded-lg bg-gray-50 dark:bg-slate-700 text-gray-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                  T4 Drop (% off T3)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  step={0.5}
+                  value={t4Disc}
+                  onChange={(e) => onUpdateGlobalConfig({ ...globalConfig, t4DiscountPct: Math.max(0, Number(e.target.value) || 0) })}
+                  className="w-full p-2 text-xs border border-gray-200 dark:border-slate-600 rounded-lg bg-gray-50 dark:bg-slate-700 text-gray-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                <Layers className="w-3.5 h-3.5 text-emerald-500" />
+                Apply Tier to P&amp;L:
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {([
+                  { id: 'T1' as CostTier, label: 'T1 (Base)' },
+                  { id: 'T2' as CostTier, label: `T2 (T1 -${t2Disc}%)` },
+                  { id: 'T3' as CostTier, label: `T3 (T2 -${t3Disc}%)` },
+                  { id: 'T4' as CostTier, label: `T4 (T3 -${t4Disc}%)` },
+                ]).map(tier => (
+                  <button
+                    key={tier.id}
+                    onClick={() => onUpdateGlobalConfig({ ...globalConfig, activeCostTier: tier.id })}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                      activeTier === tier.id
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-600'
+                    }`}
+                  >
+                    {tier.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -542,7 +659,7 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
             />
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {(['ALL', 'PROFITABLE', 'THIN', 'LOSS'] as const).map(st => (
               <button
                 key={st}
@@ -564,14 +681,25 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
             <thead className="bg-gray-50 dark:bg-slate-700/60 text-gray-600 dark:text-gray-300 font-semibold uppercase border-b border-gray-100 dark:border-slate-700">
               <tr>
                 <th className="px-4 py-3.5">Product &amp; SKU</th>
-                <th className="px-4 py-3.5 text-right">Units</th>
-                <th className="px-4 py-3.5 text-right">ASP</th>
-                <th className="px-4 py-3.5 text-right">Gross Rev</th>
-                <th className="px-4 py-3.5 text-right bg-yellow-50/60 dark:bg-yellow-950/20">Unit COGS (₹) ✎</th>
-                <th className="px-4 py-3.5 text-right">Total COGS</th>
-                <th className="px-4 py-3.5 text-right">Fees + Ship</th>
-                <th className="px-4 py-3.5 text-right">Ad Share</th>
-                <th className="px-4 py-3.5 text-right">Net Profit</th>
+                <th className="px-3 py-3.5 text-right">Units</th>
+                <th className="px-3 py-3.5 text-right">ASP</th>
+                <th className="px-3 py-3.5 text-right">Gross Rev</th>
+                <th className={`px-3 py-3.5 text-right ${activeTier === 'T1' ? 'bg-yellow-50 dark:bg-yellow-950/30 text-yellow-800 dark:text-yellow-300' : 'bg-yellow-50/40 dark:bg-yellow-950/10'}`}>
+                  T1 Cost (₹) ✎
+                </th>
+                <th className={`px-3 py-3.5 text-right ${activeTier === 'T2' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300' : ''}`}>
+                  T2 (-{t2Disc}%)
+                </th>
+                <th className={`px-3 py-3.5 text-right ${activeTier === 'T3' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300' : ''}`}>
+                  T3 (-{t3Disc}%)
+                </th>
+                <th className={`px-3 py-3.5 text-right ${activeTier === 'T4' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300' : ''}`}>
+                  T4 (-{t4Disc}%)
+                </th>
+                <th className="px-3 py-3.5 text-right">Total COGS ({activeTier})</th>
+                <th className="px-3 py-3.5 text-right">Fees + Ship</th>
+                <th className="px-3 py-3.5 text-right">Ad Share</th>
+                <th className="px-3 py-3.5 text-right">Net Profit</th>
                 <th className="px-4 py-3.5 text-right">Margin %</th>
               </tr>
             </thead>
@@ -580,7 +708,7 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
                 <tr key={row.itemId} className="hover:bg-gray-50 dark:hover:bg-slate-700/40 transition-colors">
                   <td
                     onClick={() => onSelectProduct(row.itemId)}
-                    className="px-4 py-3 max-w-[230px] cursor-pointer group"
+                    className="px-4 py-3 max-w-[220px] cursor-pointer group"
                   >
                     <div className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-blue-600 truncate" title={row.itemName}>
                       {row.itemName}
@@ -589,20 +717,20 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
                       ID: {row.itemId} • {row.brandName}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">
+                  <td className="px-3 py-3 text-right font-medium text-gray-700 dark:text-gray-300">
                     {row.unitsSold.toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-300">
+                  <td className="px-3 py-3 text-right text-gray-600 dark:text-gray-300">
                     ₹{row.asp.toFixed(0)}
                   </td>
-                  <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-white">
+                  <td className="px-3 py-3 text-right font-semibold text-gray-900 dark:text-white">
                     {formatCurrency(row.grossRevenue)}
                   </td>
-                  <td className="px-4 py-3 text-right bg-yellow-50/30 dark:bg-yellow-950/10">
+                  <td className={`px-3 py-3 text-right ${activeTier === 'T1' ? 'bg-yellow-50/50 dark:bg-yellow-950/20' : 'bg-yellow-50/20 dark:bg-yellow-950/10'}`}>
                     <input
                       type="number"
                       min={0}
-                      placeholder={row.unitCogs.toFixed(0)}
+                      placeholder={row.t1Cost.toFixed(2)}
                       value={productCosts[row.itemId]?.costPrice ?? ''}
                       onChange={(e) => handleCostChange(row.itemId, e.target.value)}
                       className={`w-20 px-2 py-1 text-right text-xs rounded border outline-none focus:ring-2 focus:ring-yellow-400 ${
@@ -610,19 +738,28 @@ export const ProfitAnalytics: React.FC<ProfitAnalyticsProps> = ({
                           ? 'border-emerald-300 bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-300 font-bold'
                           : 'border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-800 text-gray-500 dark:text-gray-400'
                       }`}
-                      title={row.hasCustomCogs ? 'Custom SKU COGS saved locally' : `Using ${globalConfig.defaultCogsPct}% of ASP default`}
+                      title={row.hasCustomCogs ? 'Custom Tier 1 Cost saved locally' : `Using ${globalConfig.defaultCogsPct}% of ASP default as Tier 1`}
                     />
                   </td>
-                  <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-300">
+                  <td className={`px-3 py-3 text-right font-medium ${activeTier === 'T2' ? 'bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 font-bold' : 'text-gray-700 dark:text-gray-300'}`}>
+                    ₹{row.t2Cost.toFixed(2)}
+                  </td>
+                  <td className={`px-3 py-3 text-right font-medium ${activeTier === 'T3' ? 'bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 font-bold' : 'text-gray-700 dark:text-gray-300'}`}>
+                    ₹{row.t3Cost.toFixed(2)}
+                  </td>
+                  <td className={`px-3 py-3 text-right font-medium ${activeTier === 'T4' ? 'bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 font-bold' : 'text-gray-700 dark:text-gray-300'}`}>
+                    ₹{row.t4Cost.toFixed(2)}
+                  </td>
+                  <td className="px-3 py-3 text-right text-gray-600 dark:text-gray-300">
                     {formatCurrency(row.totalCogs)}
                   </td>
-                  <td className="px-4 py-3 text-right text-amber-600 dark:text-amber-400">
+                  <td className="px-3 py-3 text-right text-amber-600 dark:text-amber-400">
                     {formatCurrency(row.totalPlatformFees)}
                   </td>
-                  <td className="px-4 py-3 text-right text-purple-600 dark:text-purple-400">
+                  <td className="px-3 py-3 text-right text-purple-600 dark:text-purple-400">
                     {formatCurrency(row.allocatedAdSpend)}
                   </td>
-                  <td className={`px-4 py-3 text-right font-bold ${
+                  <td className={`px-3 py-3 text-right font-bold ${
                     row.netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
                   }`}>
                     {formatCurrency(row.netProfit)}

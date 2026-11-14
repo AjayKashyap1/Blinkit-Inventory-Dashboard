@@ -12,6 +12,10 @@ export const DEFAULT_GLOBAL_PROFIT_CONFIG: GlobalProfitConfig = {
   defaultCommissionPct: 15,
   defaultShippingPerUnit: 25,
   gstOnFeesPct: 18,
+  activeCostTier: 'T1',
+  t2DiscountPct: 10,
+  t3DiscountPct: 5,
+  t4DiscountPct: 5,
 };
 
 export const loadProductCosts = (): Record<string, ProductCostConfig> => {
